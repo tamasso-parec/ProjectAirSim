@@ -131,12 +131,13 @@ void UGPULidar::SetupSceneCapture(
   }
 
   // Hide debug points in case "draw-debug-points" is set to true
+  // use the enum type explicitly (keeps current index 0 behavior)
   OutSceneCaptureComp->HideComponent(
-      Cast<UPrimitiveComponent>(UnrealWorld->LineBatcher));
+    Cast<UPrimitiveComponent>(UnrealWorld->GetLineBatcher(UWorld::ELineBatcherType::World)));
   OutSceneCaptureComp->HideComponent(
-      Cast<UPrimitiveComponent>(UnrealWorld->PersistentLineBatcher));
+      Cast<UPrimitiveComponent>(UnrealWorld->GetLineBatcher(UWorld::ELineBatcherType::WorldPersistent)));
   OutSceneCaptureComp->HideComponent(
-      Cast<UPrimitiveComponent>(UnrealWorld->ForegroundLineBatcher));
+      Cast<UPrimitiveComponent>(UnrealWorld->GetLineBatcher(UWorld::ELineBatcherType::Foreground)));
 
   OutSceneCaptureComp->RegisterComponent();
   auto RenderTarget = NewObject<UTextureRenderTarget2D>();

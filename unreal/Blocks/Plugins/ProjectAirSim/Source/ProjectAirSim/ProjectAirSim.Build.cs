@@ -11,7 +11,7 @@ public class ProjectAirSim : ModuleRules
 {
     public ProjectAirSim(ReadOnlyTargetRules Target) : base(Target)
     {
-        CppStandard = CppStandardVersion.Cpp17;
+        CppStandard = CppStandardVersion.Cpp20;
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivatePCHHeaderFile = "Public/ProjectAirSim.h";
 
@@ -36,10 +36,16 @@ public class ProjectAirSim : ModuleRules
             }
         );
 
+        List<string> privateIncludes = new List<string> {
+                    EngineDirectory + "/Source/Runtime/Renderer/Private"
+                ,
+                    EngineDirectory + "/Source/Runtime/Renderer/Internal"
+                };
+
         PrivateIncludePaths.AddRange(
-            new string[] {
-                EngineDirectory + "/Source/Runtime/Renderer/Private"
-            }
+            
+                privateIncludes
+            
         );
 
         // TODO: Can we do something to add includes and libraries for features

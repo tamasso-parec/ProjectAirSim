@@ -16,13 +16,17 @@ class FLidarIntensitySceneViewExtension : public FSceneViewExtensionBase {
   virtual void SetupView(FSceneViewFamily& InViewFamily,
                          FSceneView& InView) override {};
   virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {};
+
+  using FSceneViewExtensionBase::PreRenderViewFamily_RenderThread;
   virtual void PreRenderViewFamily_RenderThread(
       FRHICommandListImmediate& RHICmdList,
-      FSceneViewFamily& InViewFamily) override {};
+      FSceneViewFamily& InViewFamily) {};
+
+    using FSceneViewExtensionBase::PreRenderView_RenderThread;
   virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList,
-                                          FSceneView& InView) override {};
+                                          FSceneView& InView)  {};
   virtual void PostRenderBasePass_RenderThread(
-      FRHICommandListImmediate& RHICmdList, FSceneView& InView) override {};
+      FRHICommandListImmediate& RHICmdList, FSceneView& InView) {};
 
   // Only implement this, called right before post processing begins.
   virtual void PrePostProcessPass_RenderThread(

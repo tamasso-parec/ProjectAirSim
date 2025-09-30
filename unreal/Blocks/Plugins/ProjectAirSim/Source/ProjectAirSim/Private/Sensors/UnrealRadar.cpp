@@ -486,8 +486,10 @@ inline projectairsim::Kinematics UUnrealRadar::GetKinematicsFromActor(
   // cast to get their kinematics.
   projectairsim::Kinematics Kin;  // constructs with zero values
 
-  const AUnrealRobot* RobotActor = Cast<AUnrealRobot, AActor>(Actor);
-  const AUnrealEnvActor* EnvActor = Cast<AUnrealEnvActor, AActor>(Actor);
+  // const AUnrealRobot* RobotActor = Cast<AUnrealRobot, AActor>(Actor);
+  const AUnrealRobot* RobotActor = Cast<const AUnrealRobot>(const_cast<AActor*>(Actor));
+  // const AUnrealEnvActor* EnvActor = Cast<AUnrealEnvActor, AActor>(Actor);
+  const AUnrealEnvActor* EnvActor = Cast<const AUnrealEnvActor>(const_cast<AActor*>(Actor));
 
   if (RobotActor) {
     Kin = RobotActor->GetKinematics();

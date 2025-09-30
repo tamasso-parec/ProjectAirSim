@@ -51,10 +51,40 @@ class FLidarIntensityPS : public FLidarIntensityShader {
       const ShaderMetaType::CompiledShaderInitializerType& Initializer)
       : FLidarIntensityShader(Initializer) {}
 
-  void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View) {
-    FGlobalShader::SetParameters<FViewUniformShaderParameters>(
-        RHICmdList, RHICmdList.GetBoundPixelShader(), View.ViewUniformBuffer);
+  void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+  { 
+    // 1) Create (or get) an allocator tied to this command list
+    FRHIBatchedShaderParametersAllocator* Alloc =
+        RHICmdList.CreateBatchedShaderParameterAllocator(
+            ERHIBatchedShaderParameterAllocatorPageSize::Small); // or Large if you batch a lot
+
+    // 2) Build the batched parameter blob
+    FRHIBatchedShaderParameters Batched(*Alloc);
+
+    // 3) Get the View uniform buffer pointer from the old View type
+    FRHIUniformBuffer* ViewUB = View.ViewUniformBuffer.GetReference(); 
+
+    // 4) Use the new UE5.6 global-shader helper that targets batched params
+    FGlobalShader::SetParameters<FViewUniformShaderParameters>(Batched, ViewUB);
+
+    // 5) Bind the batched params to THIS shader (pixel/vertex/etc.)
+    //    Pick the right RHI shader for your stage:
+    // if (auto* PS = GetPixelShader())            RHICmdList.SetBatchedShaderParameters(PS, Batched);
+    // if (auto* VS = GetVertexShader())           RHICmdList.SetBatchedShaderParameters(VS, Batched);
+    // if (auto* CS = GetComputeShader())          RHICmdList.SetBatchedShaderParameters(CS, Batched);
+    // if (auto* MS = GetMeshShader())             RHICmdList.SetBatchedShaderParameters(MS, Batched);
+    // if (auto* AS = GetAmplificationShader())    RHICmdList.SetBatchedShaderParameters(AS, Batched);
+
+    // Optional (sanity): Batched.Finish(); // detaches from allocator in your header’s impl
+
+    SetParameters(Batched, ViewUB);
   }
+  
+  void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, FRHIUniformBuffer* ViewUniformBuffer) {
+    FGlobalShader::SetParameters<FViewUniformShaderParameters>(
+        BatchedParameters, ViewUniformBuffer);
+  }
+
 
   static void ModifyCompilationEnvironment(
       const FGlobalShaderPermutationParameters& Parameters,
@@ -73,8 +103,39 @@ class FLidarIntensityVS : public FLidarIntensityShader {
       const ShaderMetaType::CompiledShaderInitializerType& Initializer)
       : FLidarIntensityShader(Initializer) {}
 
-  void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View) {
-    FGlobalShader::SetParameters<FViewUniformShaderParameters>(
-        RHICmdList, RHICmdList.GetBoundVertexShader(), View.ViewUniformBuffer);
+  // void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View) {
+  //     FGlobalShader::SetParameters<FViewUniformShaderParameters>(
+  //       RHICmdList, RHICmdList.GetBoundVertexShader(), View.ViewUniformBuffer);
+  void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, FRHIUniformBuffer* ViewUniformBuffer) {
+      FGlobalShader::SetParameters<FViewUniformShaderParameters>(BatchedParameters, ViewUniformBuffer);
+  }
+
+  void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+  { 
+    // 1) Create (or get) an allocator tied to this command list
+    FRHIBatchedShaderParametersAllocator* Alloc =
+        RHICmdList.CreateBatchedShaderParameterAllocator(
+            ERHIBatchedShaderParameterAllocatorPageSize::Small); // or Large if you batch a lot
+
+    // 2) Build the batched parameter blob
+    FRHIBatchedShaderParameters Batched(*Alloc);
+
+    // 3) Get the View uniform buffer pointer from the old View type
+    FRHIUniformBuffer* ViewUB = View.ViewUniformBuffer.GetReference();
+
+    // 4) Use the new UE5.6 global-shader helper that targets batched params
+    FGlobalShader::SetParameters<FViewUniformShaderParameters>(Batched, ViewUB);
+
+    // 5) Bind the batched params to THIS shader (pixel/vertex/etc.)
+    //    Pick the right RHI shader for your stage:
+    // if (auto* PS = GetPixelShader())            RHICmdList.SetBatchedShaderParameters(PS, Batched);
+    // if (auto* VS = GetVertexShader())           RHICmdList.SetBatchedShaderParameters(VS, Batched);
+    // if (auto* CS = GetComputeShader())          RHICmdList.SetBatchedShaderParameters(CS, Batched);
+    // if (auto* MS = GetMeshShader())             RHICmdList.SetBatchedShaderParameters(MS, Batched);
+    // if (auto* AS = GetAmplificationShader())    RHICmdList.SetBatchedShaderParameters(AS, Batched);
+
+    // Optional (sanity): Batched.Finish(); // detaches from allocator in your header’s impl
+
+    SetParameters(Batched, ViewUB);
   }
 };

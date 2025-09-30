@@ -4,6 +4,7 @@
 #include "SceneView.h"
 #include "RenderGraph.h"
 #include "Runtime/Renderer/Private/PostProcess/PostProcessing.h"
+#include "Runtime/Renderer/Private/PostProcess/SceneFilterRendering.h"
 #include "CommonRenderResources.h"
 #include "Containers/DynamicRHIResourceArray.h"
 #include "Engine/World.h"
@@ -288,12 +289,22 @@ void FLidarIntensitySceneViewExtension::PrePostProcessPass_RenderThread(
         RDG_EVENT_NAME("FCopyBufferToCPUPass"), CopyPassParameters,
         ERDGPassFlags::Readback,
         [this, &InitialData, PointCloudBufferRDG, BufferSize](FRHICommandList& RHICmdList) {
-          InitialData = (float*)RHILockBuffer(PointCloudBufferRDG->GetRHI(), 0,
-                                              BufferSize, RLM_ReadOnly);
+        //   InitialData = (float*)RHILockBuffer(PointCloudBufferRDG->GetRHI(), 0,
+        //                                       BufferSize, RLM_ReadOnly);
 
-          FMemory::Memcpy(LidarPointCloudData.data(), InitialData, BufferSize);
+            void* LockedPtr = RHICmdList.LockBuffer(
+            PointCloudBufferRDG->GetRHI(),
+            0,           // Offset
+            BufferSize,  // Size
+            RLM_ReadOnly // Lock mode
+            );
+            InitialData = (float*)LockedPtr;
 
-          RHIUnlockBuffer(PointCloudBufferRDG->GetRHI());
+            
+            FMemory::Memcpy(LidarPointCloudData.data(), InitialData, BufferSize);
+            
+            RHICmdList.UnlockBuffer(PointCloudBufferRDG->GetRHI());
+        //   RHIUnlockBuffer(PointCloudBufferRDG->GetRHI());
         });
 }
 

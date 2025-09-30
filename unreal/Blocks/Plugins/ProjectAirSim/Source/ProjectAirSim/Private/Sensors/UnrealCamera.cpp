@@ -150,11 +150,11 @@ void UUnrealCamera::LoadCameraMaterials() {
 void HideDebugDrawComponent(USceneCaptureComponent2D* CaptureComponent,
                             UWorld* UnrealWorld) {
   CaptureComponent->HideComponent(
-      Cast<UPrimitiveComponent>(UnrealWorld->LineBatcher));
+      Cast<UPrimitiveComponent>(UnrealWorld->GetLineBatcher(UWorld::ELineBatcherType::World)));
   CaptureComponent->HideComponent(
-      Cast<UPrimitiveComponent>(UnrealWorld->PersistentLineBatcher));
+      Cast<UPrimitiveComponent>(UnrealWorld->GetLineBatcher(UWorld::ELineBatcherType::WorldPersistent)));
   CaptureComponent->HideComponent(
-      Cast<UPrimitiveComponent>(UnrealWorld->ForegroundLineBatcher));
+      Cast<UPrimitiveComponent>(UnrealWorld->GetLineBatcher(UWorld::ELineBatcherType::Foreground)));
 }
 
 void UUnrealCamera::CreateComponents() {

@@ -259,9 +259,16 @@ void UGPULidar::InitializePose() {
   projectairsim::Transform InitializedPose = UnrealTransform::GetPoseNed(this);
   projectairsim::Vector3 InitializedRPY = projectairsim::TransformUtils::ToDegrees(
       projectairsim::TransformUtils::ToRPY(InitializedPose.rotation_));
+
+
+  // UE::Core::TCheckedFormatString<TCHAR, const char *, float &, float &, float &, float &, float &, float &> line(
+  //     TEXT("[UnrealLidar] Lidar '%hs': InitializePose(). "
+  //          "RelativeLocation (%f,%f,%f) RelativeRotationRPY (%f,%f,%f)"));
+
+
   UnrealLogger::Log(
       projectairsim::LogLevel::kTrace,
-      TEXT("[UnrealLidar] Lidar '%S': InitializePose(). "
+      TEXT("[UnrealLidar] Lidar '%hs': InitializePose(). "
            "RelativeLocation (%f,%f,%f) RelativeRotationRPY (%f,%f,%f)"),
       Lidar.GetId().c_str(), InitializedPose.translation_.x(),
       InitializedPose.translation_.y(), InitializedPose.translation_.z(),

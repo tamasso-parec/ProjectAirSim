@@ -154,6 +154,10 @@ void AUnrealRobot::OnCollisionHit(UPrimitiveComponent* HitComponent,
     SimRobot.UpdateCollisionInfo(NewCollisionInfo);
 
     if (HitComponent == RobotRootLink) {
+
+      // UE::Core::TCheckedFormatString<TCHAR, const char16_t *, const char16_t *, const double &> line(
+      // TEXT("Collision detected between '%s' and '%s' at z= '%f'"));
+
       UnrealLogger::Log(
           projectairsim::LogLevel::kTrace,
           TEXT("Collision detected between '%s' and '%s' at z= '%f'"),

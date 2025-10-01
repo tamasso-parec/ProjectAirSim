@@ -643,6 +643,8 @@ void UUnrealCamera::BeginPlay() {
   Super::BeginPlay();
 
   projectairsim::Transform BeginPlayPose = UnrealTransform::GetPoseNed(this);
+
+  // UE::Core::TCheckedFormatString<TCHAR, const char *, float &, float &, float &> line(TEXT("[UnrealCamera] Camera '%S': BeginPlay(). Location (%f,%f,%f)"));
   UnrealLogger::Log(
       projectairsim::LogLevel::kTrace,
       TEXT("[UnrealCamera] Camera '%S': BeginPlay(). Location (%f,%f,%f)"),

@@ -466,6 +466,11 @@ std::vector<mrrs::TileKey> AGISRenderer::HandleMissingTiles(
                 mrrs::BingMapsUtils::TileXYToQuadkey(
                     tempParentTile.x, tempParentTile.y, tempParentTile.lod)
                     .c_str();
+            // UE::Core::TCheckedFormatString<TCHAR, const char16_t *, const int &, const char16_t *, int &> line(
+            //       TEXT("[GISRenderer] Tile '%s'(lod-'%d') not available. Using "
+            //          "'%s'(lod-'%d') instead."));
+
+
             UnrealLogger::Log(
                 microsoft::projectairsim::LogLevel::kVerbose,
                 TEXT("[GISRenderer] Tile '%s'(lod-'%d') not available. Using "

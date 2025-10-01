@@ -181,13 +181,21 @@ void UUnrealLidar::SetupLidarFromSettings(
     const projectairsim::LidarSettings& LidarSettings) {
   Settings = LidarSettings;
 
+  // UE::Core::TCheckedFormatString<TCHAR, const char*, microsoft::projectairsim::LidarKind&> line(
+  //     TEXT("[UnrealLidar] Lidar '%hs': SetupLidarFromSettings(): Unhandled lidar_kind %d"));
+
   switch (Settings.lidar_kind) {
     default:
-      UnrealLogger::Log(
-          projectairsim::LogLevel::kFatal,
-          TEXT("[UnrealLidar] Lidar '%S': SetupLidarFromSettings(): Unhandled "
-               "lidar_kind %d"),
-          Lidar.GetId().c_str(), Settings.lidar_kind);
+
+      // UnrealLogger::Log(projectairsim::LogLevel::kFatal,
+      //             TEXT("[UnrealLidar] Lidar '%s': SetupLidarFromSettings(): Unhandled lidar_kind %d"),
+      //             Lidar.GetId().c_str(), Settings.lidar_kind);
+
+      // UnrealLogger::Log(
+      //     projectairsim::LogLevel::kFatal,
+      //     TEXT("[UnrealLidar] Lidar '%S': SetupLidarFromSettings(): Unhandled "
+      //          "lidar_kind %d"),
+      //     Lidar.GetId().c_str(), Settings.lidar_kind);
       PScanPattern = std::make_unique<CylindricalScanPattern>();
       break;
 

@@ -64,6 +64,7 @@ void AUnrealSimLoader::LaunchSimulation(UWorld* World) {
 
   if (ENGINE_MAJOR_VERSION != SupportedUnrealVersionMajor ||
       ENGINE_MINOR_VERSION != SupportedUnrealVersionMinor) {
+
     UnrealLogger::Log(
         projectairsim::LogLevel::kWarning,
         TEXT("Unreal Engine version is not the supported version of %d.%d."),
@@ -328,6 +329,9 @@ void AUnrealSimLoader::SetUnrealEngineVariableInt(const TCHAR* VarName,
 
   // Confirm that variable value was set
   if (ConsoleVar == nullptr || ConsoleVar->GetInt() != VarValue) {
+
+    // UE::Core::TCheckedFormatString<TCHAR, const char*> line(TEXT("[AUnrealSimLoader::SetUnrealEngineSettings()] "
+    //                        "Console variable '%s' could not be set"));
     UnrealLogger::Log(projectairsim::LogLevel::kError,
                       TEXT("[AUnrealSimLoader::SetUnrealEngineSettings()] "
                            "Console variable '%s' could not be set"),

@@ -192,9 +192,14 @@ class UnrealHelpers : public UBlueprintFunctionLibrary {
     // Set object's segmentation ID if existing value isn't already enabled, or
     // the ignore_existing option is used to set everything
     if (!seg_name_to_id.Contains(seg_name) || ignore_existing) {
+
+      // UE::Core::TCheckedFormatString<TCHAR, int&, const char*> line(
+      // TEXT("[InitSegmentationID] seg_id: %3d, seg_name: '%hs'"));
+
       UnrealLogger::Log(
           microsoft::projectairsim::LogLevel::kTrace,
-          TEXT("[InitSegmentationID] seg_id: %3d, seg_name: '%s'"), seg_id,
+          TEXT("[InitSegmentationID] seg_id: %3d, seg_name: '%s'"),
+          seg_id,
           *seg_name);
       SetSegmentationID(mesh, seg_id);
       seg_name_to_id.Add(seg_name, seg_id);

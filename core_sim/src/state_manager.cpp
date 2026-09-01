@@ -300,7 +300,7 @@ void StateManager::Impl::Load(const json& config_json) {
   this_scene_id_ = sim_scene_->GetID();
   this_scene_idx_ = -1;
   for (int i = 0; i < sim_scenes.size(); ++i) {
-    if (this_scene_id_ == sim_scenes[i]["id"]) {
+    if (this_scene_id_ == sim_scenes[i]["id"].get_ref<const std::string&>()) {
       this_scene_idx_ = i;
       break;
     }
@@ -339,8 +339,8 @@ void StateManager::Impl::Load(const json& config_json) {
            ++instance_idx) {
         const json& local_robots = sim_scenes[instance_idx]["local-robots"];
 
-        for (auto local_robot_id : local_robots) {
-          if (robot_id == local_robot_id) {
+        for (const auto& local_robot_id : local_robots) {
+          if (robot_id == local_robot_id.get_ref<const std::string&>()) {
             robot_instance_idx = instance_idx;
             break;
           }

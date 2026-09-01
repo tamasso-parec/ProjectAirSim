@@ -80,8 +80,8 @@ endif()
 # Directly download single include file json.hpp
 FetchContent_Declare(
     nlohmann-json
-    URL                  https://raw.githubusercontent.com/nlohmann/json/v3.11.2/single_include/nlohmann/json.hpp
-    URL_HASH             MD5=b1c1ce77d46b72b72f38051d8384c7b8  # from PowerShell: CertUtil -hashfile json.hpp MD5
+    URL                  https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp
+    URL_HASH             MD5=30b66ababceb852ec47ecf93fd370b8d  # from PowerShell: CertUtil -hashfile json.hpp MD5
     DOWNLOAD_NO_EXTRACT  True
     DOWNLOAD_NO_PROGRESS True
     DOWNLOAD_DIR         ${CMAKE_BINARY_DIR}/_deps/nlohmann-install

@@ -146,6 +146,11 @@ test_simlibs_release: simlibs_release
 #
 # ---------------------------------------------------------------------------------------------------------------------
 
+# UE 5.6 pins .NET packages whose current NuGet audit warnings are promoted to
+# errors while AutomationTool compiles its script modules. Disable the audit for
+# that build-tool bootstrap only; it does not affect the packaged application.
+UAT_CMD = NuGetAudit=false $(UE_ROOT)/Engine/Build/BatchFiles/RunUAT.sh
+
 .PHONY: blocks_debuggame
 blocks_debuggame: simlibs_debug
 	@echo "======================================================================="
@@ -201,9 +206,9 @@ ifndef UE_ROOT
 	Unreal engine's root folder path, ex. /home/ue4/UnrealEngine-4.25.0"
 else
 	@echo "UE_ROOT env variable set to: $(UE_ROOT)"
-	$(UE_ROOT)/Engine/Build/BatchFiles/RunUAT.sh BuildCookRun \
+	$(UAT_CMD) BuildCookRun \
 		-project="$(CURDIR)/unreal/Blocks/Blocks.uproject" \
-		-nop4 -nocompile -build -cook -compressed -pak -allmaps -stage \
+		-nop4 -build -cook -compressed -pak -allmaps -stage \
 		-archive -archivedirectory="$(CURDIR)/packages/Blocks/DebugGame" \
 		-clientconfig=DebugGame -clean -utf8output -prereqs
 endif
@@ -218,9 +223,9 @@ ifndef UE_ROOT
 	Unreal engine's root folder path, ex. /home/ue4/UnrealEngine-4.25.0"
 else
 	@echo "UE_ROOT env variable set to: $(UE_ROOT)"
-	$(UE_ROOT)/Engine/Build/BatchFiles/RunUAT.sh BuildCookRun \
+	$(UAT_CMD) BuildCookRun \
 		-project="$(CURDIR)/unreal/Blocks/Blocks.uproject" \
-		-nop4 -nocompile -build -cook -compressed -pak -allmaps -stage \
+		-nop4 -build -cook -compressed -pak -allmaps -stage \
 		-archive -archivedirectory="$(CURDIR)/packages/Blocks/Development" \
 		-clientconfig=Development -clean -utf8output -prereqs
 endif
@@ -235,9 +240,9 @@ ifndef UE_ROOT
 	Unreal engine's root folder path, ex. /home/ue4/UnrealEngine-4.25.0"
 else
 	@echo "UE_ROOT env variable set to: $(UE_ROOT)"
-	$(UE_ROOT)/Engine/Build/BatchFiles/RunUAT.sh BuildCookRun \
+	$(UAT_CMD) BuildCookRun \
 		-project="$(CURDIR)/unreal/Blocks/Blocks.uproject" \
-		-nop4 -nocompile -build -cook -compressed -pak -allmaps -stage \
+		-nop4 -build -cook -compressed -pak -allmaps -stage \
 		-archive -archivedirectory="$(CURDIR)/packages/Blocks/Shipping" \
 		-clientconfig=Shipping -clean -utf8output -prereqs -nodebuginfo
 endif

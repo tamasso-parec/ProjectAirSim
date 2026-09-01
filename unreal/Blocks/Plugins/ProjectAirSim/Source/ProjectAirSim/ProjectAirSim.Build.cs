@@ -210,9 +210,6 @@ public class ProjectAirSim : ModuleRules
             PublicAdditionalLibraries.AddRange(liststrLibraries);
             PublicSystemLibraries.AddRange(
                 new string[] {
-                    "c++",
-                    "stdc++",
-                    "supc++",
                     "pthread",
                     "anl"
                 }

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>projectairsim_ros1</name>
+  <version>0.1.1</version>
+  <description>ROS 1 adapter for the Project AirSim ROS bridge.</description>
+  <maintainer email="opensource@iamaisim.com">IAMAI Simulations</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>radar_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+</package>

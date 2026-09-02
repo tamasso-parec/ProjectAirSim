@@ -87,7 +87,7 @@ class MsgConverter:
         fluid_pressure = rossensmsg.FluidPressure()
         fluid_pressure.header = self._get_standard_ros_header(projectairsim_topic_name)
 
-        fluid_pressure.fluid_pressure = projectairsim_msg["pressure"]
+        fluid_pressure.fluid_pressure = float(projectairsim_msg["pressure"])
         fluid_pressure.variance = 0.0
 
         return fluid_pressure
@@ -133,9 +133,9 @@ class MsgConverter:
         )
         nav_sat_fix.status.service = rossensmsg.NavSatStatus.SERVICE_GPS
 
-        nav_sat_fix.latitude = projectairsim_msg["latitude"]
-        nav_sat_fix.longitude = projectairsim_msg["longitude"]
-        nav_sat_fix.altitude = projectairsim_msg["altitude"]
+        nav_sat_fix.latitude = float(projectairsim_msg["latitude"])
+        nav_sat_fix.longitude = float(projectairsim_msg["longitude"])
+        nav_sat_fix.altitude = float(projectairsim_msg["altitude"])
         nav_sat_fix.position_covariance = [0.0] * 9
         nav_sat_fix.position_covariance_type = rossensmsg.NavSatFix.COVARIANCE_TYPE_UNKNOWN
 
@@ -183,10 +183,10 @@ class MsgConverter:
         # image.header.frame_id must be set by caller
 
         # Get image parameters
-        image.height = projectairsim_image_bgr8["height"]
-        image.width = projectairsim_image_bgr8["width"]
+        image.height = int(projectairsim_image_bgr8["height"])
+        image.width = int(projectairsim_image_bgr8["width"])
         image.encoding = "bgr8"
-        image.is_bigendian = projectairsim_image_bgr8["big_endian"]
+        image.is_bigendian = int(projectairsim_image_bgr8["big_endian"])
 
         # Convert image data to uncompressed bitmap data
         image.data = projectairsim_image_bgr8["data"]
@@ -212,19 +212,19 @@ class MsgConverter:
         # image.header.frame_id must be set by caller
 
         # Get image parameters
-        image.height = projectairsim_image_16uc1["height"]
-        image.width = projectairsim_image_16uc1["width"]
+        image.height = int(projectairsim_image_16uc1["height"])
+        image.width = int(projectairsim_image_16uc1["width"])
         image.encoding = "mono8"
-        image.is_bigendian = projectairsim_image_16uc1["big_endian"]
+        image.is_bigendian = int(projectairsim_image_16uc1["big_endian"])
 
         # Convert image data to uncompressed bitmap data
-        nparray = np.fromstring(projectairsim_image_16uc1["data"], dtype="uint16")
+        nparray = np.frombuffer(projectairsim_image_16uc1["data"], dtype="uint16")
         nparray = np.reshape(
             nparray,
             [projectairsim_image_16uc1["height"], projectairsim_image_16uc1["width"]],
         )
         nparray = ((nparray / self.max_depth_mm) * 255).astype("uint8")
-        image.data = nparray.tostring()
+        image.data = nparray.tobytes()
         image.step = image.width
 
         return image
@@ -273,9 +273,9 @@ class MsgConverter:
         # Convert from Project AirSim's RHS Z-down to ROS's RHS Z-up
         points = [
             (
-                point_cloud_airsim[i],
-                -point_cloud_airsim[i + 1],
-                -point_cloud_airsim[i + 2],
+                float(point_cloud_airsim[i]),
+                -float(point_cloud_airsim[i + 1]),
+                -float(point_cloud_airsim[i + 2]),
             )
             for i in range(0, len(point_cloud_airsim), 3)
         ]
@@ -339,7 +339,9 @@ class MsgConverter:
         magnetic_field.magnetic_field_covariance = self.NO_COVARIANCE_MATRIX
         projectairsim_covariance = projectairsim_msg["magnetic_field_covariance"]
         for i in range(0, min(len(projectairsim_covariance), 9)):
-            magnetic_field.magnetic_field_covariance[i] = projectairsim_covariance[i]
+            magnetic_field.magnetic_field_covariance[i] = float(
+                projectairsim_covariance[i]
+            )
 
         return magnetic_field
 
@@ -367,10 +369,10 @@ class MsgConverter:
             range_target = radar_detection["range"]
 
             radar_return = rosradarmsg.RadarReturn()
-            radar_return.range = range_target
-            radar_return.azimuth = radar_detection["azimuth"]
-            radar_return.elevation = radar_detection["elevation"]
-            radar_return.doppler_velocity = radar_detection["velocity"]
+            radar_return.range = float(range_target)
+            radar_return.azimuth = float(radar_detection["azimuth"])
+            radar_return.elevation = float(radar_detection["elevation"])
+            radar_return.doppler_velocity = float(radar_detection["velocity"])
 
             # Attempt to convert the radar cross-section to a signal amplitude
             # See: https://en.wikipedia.org/wiki/Radar_cross-section#Measurement

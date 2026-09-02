@@ -99,6 +99,19 @@ class ROSNode(ABC):
             """
             pass
 
+    class Service(ABC):
+        """Abstract wrapper for a ROS service server."""
+
+        def __del__(self):
+            self.destroy()
+
+        @abstractmethod
+        def destroy(self):
+            """Stop serving requests and free any resources."""
+            pass
+
+    supports_lifecycle_services = False
+
     # PointCloud2 abstracted class
     # PointCloud2 = None
 
@@ -143,6 +156,7 @@ class ROSNode(ABC):
         subscriber_listener=None,
         latch: bool = False,
         queue_size: int = 10,
+        qos_profile: str = "default",
     ):
         """
         Creates a ROS topic publisher.
@@ -153,10 +167,16 @@ class ROSNode(ABC):
             subscriber_listener - Callback to invoke when a peer subscribes to the topic
             latch - If true, the last topic message is automatically sent to new subscribers
             queue_size - Maximum number of messages to allow in queue for sending before dropping messages
+            qos_profile - Semantic QoS profile name ("default" or "sensor_data")
 
         Returns:
             (Return) - New publisher object
         """
+        raise NotImplementedError()
+
+    @abstractmethod
+    def create_service(self, topic: str, srv_type, callback):
+        """Create a ROS service server and return a Service wrapper."""
         raise NotImplementedError()
 
     @abstractmethod
@@ -190,7 +210,9 @@ class ROSNode(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def create_subscriber(self, topic: str, msg_type, callback=None):
+    def create_subscriber(
+        self, topic: str, msg_type, callback=None, qos_profile: str = "default"
+    ):
         """
         Creates a ROS topic subscriber.
 
@@ -198,6 +220,7 @@ class ROSNode(ABC):
             topic - Name of the topic
             msg_type - Data type of the topic messages
             callback - Callback to invoke when a peer publishes to the topic
+            qos_profile - Semantic QoS profile name ("default" or "sensor_data")
 
         Returns:
             (Return) - New subscriber object

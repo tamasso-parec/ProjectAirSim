@@ -13,7 +13,19 @@ import radar_msgs.msg as rosradarmsg
 import sensor_msgs.msg as rossensmsg
 import std_msgs.msg as rosstdmsg
 
-import projectairsim
+try:
+    import projectairsim
+except ModuleNotFoundError as exc:
+    if exc.name != "projectairsim":
+        raise
+    raise ModuleNotFoundError(
+        "The Project AirSim Python client is not available to the interpreter "
+        "running the ROS bridge. Install it with that interpreter (for a "
+        "system-Python colcon build, run `/usr/bin/python3 -m pip install "
+        "--user -e client/python/projectairsim` from the repository root), "
+        "or add client/python/projectairsim/src and its dependencies to "
+        "PYTHONPATH."
+    ) from exc
 from projectairsim import ProjectAirSimClient
 from projectairsim.utils import projectairsim_log
 
@@ -25,7 +37,7 @@ from .topic_helpers import (
     BasicROSSubscriber,
     CameraBridgeToROS,
     SensorBridgeToROS,
-    RobotPoseBridgeFromROS,
+    RobotControlHandler,
     RobotPoseBridgeToROS,
     TopicsManagers,
 )
@@ -184,6 +196,9 @@ class ProjectAirSimROSBridge:
         start_ros: bool = True,
         client: ProjectAirSimClient = None,
         logger: logging.Logger = None,
+        cmd_vel_timeout_sec: float = 1.0,
+        takeoff_timeout_sec: float = 20.0,
+        land_timeout_sec: float = 60.0,
     ):
         """
         Constructor.
@@ -212,6 +227,9 @@ class ProjectAirSimROSBridge:
             start_ros - If true, ROS topic processing is started immediately
             client - Project AirSim client object (already connected to Project AirSim)
             logger - Logger object; if None, the default Project AirSim logger is used
+            cmd_vel_timeout_sec - Velocity-command failsafe duration
+            takeoff_timeout_sec - Maximum takeoff service duration
+            land_timeout_sec - Maximum landing service duration
         """
         # TODO: make dynamic limits class or rosparam?
 
@@ -268,12 +286,6 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
-            ),
-            self.TopicEntry(
-                self.TopicEntry.MatchType.ENDS_WITH,
-                "/desired_pose",
-                rosgeommsg.PoseStamped,
-                topic_handler_type=RobotPoseBridgeFromROS,
             ),
             self.TopicEntry(
                 self.TopicEntry.MatchType.ENDS_WITH,
@@ -362,15 +374,22 @@ class ProjectAirSimROSBridge:
             False  # Whether self.projectairsim_client is connected to Project AirSim
         )
         self.topic_handlers = {}  # Handlers for each topic
+        self.robot_control_handlers = {}  # Per-robot command and service handlers
         self.robot_paths = {}  # Mapping from Project AirSim topic name to robot path
         self.robot_base_frame_ids = (
             {}
         )  # Mapping from Project AirSim topic name to robot's base transform frame ID
         self.ros_node = ros_node  # ROS node
-        self.ros_is_running = (
-            False  # If true, stop_ros() has not yet been called since a start_ros()
-        )
+        self.cmd_vel_timeout_sec = float(cmd_vel_timeout_sec)
+        self.takeoff_timeout_sec = float(takeoff_timeout_sec)
+        self.land_timeout_sec = float(land_timeout_sec)
+        self.ros_is_started = False
         self.topics_managers = None  # Topic and transform managers
+
+        if self.cmd_vel_timeout_sec <= 0:
+            raise ValueError("cmd_vel_timeout_sec must be greater than zero")
+        if self.takeoff_timeout_sec <= 0 or self.land_timeout_sec <= 0:
+            raise ValueError("takeoff and land timeouts must be greater than zero")
 
         if logger is None:
             self.logger = projectairsim_log()
@@ -422,6 +441,8 @@ class ProjectAirSimROSBridge:
         Stop processing and free resources
         """
         self.stop_ros()
+        if self.topics_managers is not None:
+            self.topics_managers.close()
         if self.projectairsim_client is not None and self.is_connected_to_client:
             self.is_connected_to_client = False
             if self.is_client_ours:
@@ -461,6 +482,7 @@ class ProjectAirSimROSBridge:
         exist are removed.
         """
         topic_handlers_new = {}
+        robot_control_handlers_new = {}
         robot_paths_new = {}
         robot_base_frame_ids_new = {}
 
@@ -500,9 +522,32 @@ class ProjectAirSimROSBridge:
                         topic_handlers_new[topic_name] = topic_handler
                         break
 
+            # Controls are per robot, not per sensor/topic. This ensures cmd_vel
+            # and lifecycle services exist even if desired_pose is unavailable.
+            projectairsim_topic_names = set(self.projectairsim_client.topics)
+            for robot_path in sorted(set(robot_paths_new.values())):
+                desired_pose_topic_name = robot_path + "/desired_pose"
+                if desired_pose_topic_name not in projectairsim_topic_names:
+                    desired_pose_topic_name = None
+
+                if robot_path in self.robot_control_handlers:
+                    handler = self.robot_control_handlers.pop(robot_path)
+                else:
+                    handler = RobotControlHandler(
+                        robot_path=robot_path,
+                        topics_managers=self.topics_managers,
+                        desired_pose_topic_name=desired_pose_topic_name,
+                        cmd_vel_timeout_sec=self.cmd_vel_timeout_sec,
+                        takeoff_timeout_sec=self.takeoff_timeout_sec,
+                        land_timeout_sec=self.land_timeout_sec,
+                        create_lifecycle_services=self.ros_node.supports_lifecycle_services,
+                    )
+                robot_control_handlers_new[robot_path] = handler
+
         # Clear handlers that are no longer needed and save new handlers
         self._clear_handlers()  # Skip setting empty dictionaries
         self.topic_handlers = topic_handlers_new
+        self.robot_control_handlers = robot_control_handlers_new
         self.robot_paths = robot_paths_new
         self.msg_converter.set_robot_base_frame_ids(robot_base_frame_ids_new)
 
@@ -514,11 +559,16 @@ class ProjectAirSimROSBridge:
         """
         for pair in self.topic_handlers.items():
             pair[1].clear()
+        for handler in self.robot_control_handlers.values():
+            handler.clear()
+        self.robot_control_handlers = {}
 
     def _drop_handlers(self):
         """
         Clear all topic handlers of their resources and drop them.
         """
+        if self.topics_managers is not None:
+            self.topics_managers.cancel_pending_requests()
         self._clear_handlers()
         self.topic_handlers = {}
 
@@ -527,6 +577,7 @@ class ProjectAirSimROSBridge:
         Clear scene-related topic handlers of their resources and drop
         them.  Persistent handlers are unaffected.
         """
+        self.topics_managers.cancel_pending_requests()
         topic_handlers_new = {}
         for pair in self.topic_handlers.items():
             if pair[0].startswith(self.HANDLER_PREFIX_PERSISTENT):
@@ -536,6 +587,9 @@ class ProjectAirSimROSBridge:
                 self.topic_handlers[pair[0]] = None
 
         self.topic_handlers = topic_handlers_new
+        for handler in self.robot_control_handlers.values():
+            handler.clear()
+        self.robot_control_handlers = {}
 
     def _load_scene_message_cb(self, ros_topic_name, ros_message):
         """

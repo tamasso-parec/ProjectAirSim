@@ -132,7 +132,7 @@ class TFBroadcaster:
             threading.Event()
         )  # Event to request broadcasting thread to broadcast
         self.lock_frames = threading.Lock()  # Access guard to self.frames
-        self.logger = logger if not None else projectairsim_log()  # Logging object
+        self.logger = logger if logger is not None else projectairsim_log()
         self.rate = ros_node.create_rate(20)  # Transform broadcast rate
         self.ros_node = ros_node
         self.static_transform_broadcaster = (
@@ -183,6 +183,19 @@ class TFBroadcaster:
         """
         self.event_quit.set()
         self.event_notify.set()
+        # rclpy Rate.sleep() may otherwise remain blocked after its context is
+        # shut down. Destroying the rate wakes that sleeper; rospy rates do
+        # not expose destroy(), so keep this adapter-neutral.
+        if self.rate is not None and hasattr(self.rate, "destroy"):
+            self.rate.destroy()
+        self.rate = None
+        if (
+            self.broadcast_thread is not None
+            and self.broadcast_thread is not threading.current_thread()
+            and self.broadcast_thread.is_alive()
+        ):
+            self.broadcast_thread.join(timeout=2.0)
+        self.broadcast_thread = None
 
     def remove_frame(self, frame_id: str):
         """

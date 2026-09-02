@@ -14,7 +14,5 @@ setup(
     include_package_data=True,
     package_data={"": ["schema/*.jsonc"]},
     python_requires=">=3.7, <4",
-    install_requires=[
-        "rospy",
-    ],
+    install_requires=["projectairsim-rosbridge"],
 )

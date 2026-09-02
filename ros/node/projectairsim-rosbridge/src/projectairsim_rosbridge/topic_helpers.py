@@ -5,12 +5,15 @@ MIT License.
 ROS bridge for Project AirSim: Topic management, handlers, and helpers
 """
 
+import asyncio
+import concurrent.futures
 import logging
+import threading
 import traceback
-from typing import Dict
 
 import geometry_msgs.msg as rosgeommsg
 import sensor_msgs.msg as rossensmsg
+import std_srvs.srv as rosstdsrv
 
 from . import utils
 from .node import ROSNode
@@ -259,12 +262,12 @@ class ROSTopicsManager:
         """
         Stop publishing and unsubscribe from all topics and free resources.
         """
-        for pair in self.ros_subscribers.items():
-            pair[1]["subscriber"].unregister()
+        for pair in list(self.ros_subscribers.items()):
+            pair[1]["subscriber"].destroy()
         self.ros_subscribers = {}
 
-        for pair in self.ros_publishers.items():
-            pair[1]["publisher"].unregister()
+        for pair in list(self.ros_publishers.items()):
+            pair[1]["publisher"].destroy()
         self.ros_publishers = {}
 
     def add_publisher(
@@ -274,6 +277,7 @@ class ROSTopicsManager:
         peer_change_callback=None,
         is_latching: bool = True,
         ros_queue_size: int = 1,
+        qos_profile: str = "default",
     ):
         """
         Add a publisher for a ROS topic.  If this is the first publisher,
@@ -292,6 +296,7 @@ class ROSTopicsManager:
             is_latching - If true, the last topic message is sent to new subscribers
             ros_queue_size - The number of topic messages that may be queued while
                 waiting to be sent to subscribers
+            qos_profile - Semantic QoS profile name ("default" or "sensor_data")
         """
         if topic_name in self.ros_publishers:
             ros_peer_change_callbacks = self.ros_publishers[topic_name]["callbacks"]
@@ -304,6 +309,7 @@ class ROSTopicsManager:
                     msg_type=ros_message_type,
                     queue_size=ros_queue_size,
                     latch=is_latching,
+                    qos_profile=qos_profile,
                     subscriber_listener=self,
                 ),
                 "callbacks": ros_peer_change_callbacks,
@@ -312,7 +318,13 @@ class ROSTopicsManager:
 
         ros_peer_change_callbacks.add(peer_change_callback)
 
-    def add_subscriber(self, topic_name: str, ros_message_type: type, topic_callback):
+    def add_subscriber(
+        self,
+        topic_name: str,
+        ros_message_type: type,
+        topic_callback,
+        qos_profile: str = "default",
+    ):
         """
         Add a subscriber to a ROS topic.  Each topic may have multiple
         subscribers.
@@ -336,6 +348,7 @@ class ROSTopicsManager:
                     callback=self._topic_cb_decorator(
                         self._topic_update_cb, topic_name
                     ),
+                    qos_profile=qos_profile,
                 ),
                 "callbacks": topic_callbacks,
             }
@@ -481,6 +494,92 @@ class TopicsManagers:
         self.ros_node = ros_node
         self.ros_topics_manager = ROSTopicsManager(ros_node, logger)
         self.tf_broadcaster = TFBroadcaster(ros_node, logger)
+        self._request_lock = threading.RLock()
+        self._async_loop = None
+        self._async_loop_thread = None
+        self._async_loop_ready = threading.Event()
+        self._pending_requests = set()
+        self._pending_requests_lock = threading.Lock()
+
+    def request(self, request_data):
+        """Serialize service-socket access through the bridge's single client."""
+        with self._request_lock:
+            return self.projectairsim_topics_manager.projectairsim_client.request(
+                request_data
+            )
+
+    def request_async_blocking(self, request_data, timeout_sec: float):
+        """Run a cancellable Project AirSim async request for a ROS service."""
+        self._ensure_async_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._request_async(request_data, timeout_sec), self._async_loop
+        )
+        with self._pending_requests_lock:
+            self._pending_requests.add(future)
+        try:
+            with self._request_lock:
+                return future.result(timeout=max(1.0, timeout_sec) + 5.0)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError(
+                f"Project AirSim request timed out after {timeout_sec} seconds"
+            )
+        finally:
+            with self._pending_requests_lock:
+                self._pending_requests.discard(future)
+
+    def cancel_pending_requests(self):
+        """Cancel long-running requests, for example during a scene change."""
+        with self._pending_requests_lock:
+            pending = list(self._pending_requests)
+        for future in pending:
+            future.cancel()
+
+    def close(self):
+        """Cancel requests and stop the private asyncio loop."""
+        self.cancel_pending_requests()
+        if self._async_loop and self._async_loop.is_running():
+            self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+        if self._async_loop_thread and self._async_loop_thread.is_alive():
+            self._async_loop_thread.join(timeout=2.0)
+        self._async_loop = None
+        self._async_loop_thread = None
+
+    def _ensure_async_loop(self):
+        if self._async_loop and self._async_loop.is_running():
+            return
+        self._async_loop_ready.clear()
+        self._async_loop_thread = threading.Thread(
+            target=self._run_async_loop,
+            name="projectairsim-ros-service-loop",
+            daemon=True,
+        )
+        self._async_loop_thread.start()
+        if not self._async_loop_ready.wait(timeout=2.0):
+            raise RuntimeError("Unable to start Project AirSim service event loop")
+
+    def _run_async_loop(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._async_loop = loop
+        self._async_loop_ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            outstanding = asyncio.all_tasks(loop)
+            for task in outstanding:
+                task.cancel()
+            if outstanding:
+                loop.run_until_complete(
+                    asyncio.gather(*outstanding, return_exceptions=True)
+                )
+            loop.close()
+
+    async def _request_async(self, request_data, timeout_sec):
+        task = await self.projectairsim_topics_manager.projectairsim_client.request_async(
+            request_data
+        )
+        return await asyncio.wait_for(task, timeout=max(1.0, timeout_sec))
 
 
 # --------------------------------------------------------------------------
@@ -609,6 +708,7 @@ class BasicBridgeToROS:
         message_callback,
         ros_topic_name: str = None,
         ros_topic_is_latching: bool = True,
+        ros_qos_profile: str = "sensor_data",
     ):
         """
         Constructor.
@@ -622,6 +722,7 @@ class BasicBridgeToROS:
             message_callback - Message handler callback function
             ros_topic_name - Name of the ROS topic if different from projectairsim_topic_name
             ros_topic_is_latching - If true, new subscribers of the ROS topic receive the last message published
+            ros_qos_profile - Semantic QoS profile used by ROS2 publishers
         """
         if not callable(message_callback):
             raise TypeError(f"message_callback is not callable: {message_callback}")
@@ -646,6 +747,7 @@ class BasicBridgeToROS:
             topic_name=ros_topic_name,
             ros_message_type=ros_message_type,
             is_latching=ros_topic_is_latching,
+            qos_profile=ros_qos_profile,
             peer_change_callback=self._auto_subscriber.peer_change_cb,
         )
 
@@ -1029,8 +1131,7 @@ class CameraBridgeToROS(BasicBridgeToROS):
                 self,
                 camera_path: str,
                 desired_pose_message_callback,
-                projectairsim_client: projectairsim.ProjectAirSimClient,
-                ros_topics_manager: ROSTopicsManager,
+                topics_managers: TopicsManagers,
             ):
                 """
                 Constructor.
@@ -1047,20 +1148,17 @@ class CameraBridgeToROS(BasicBridgeToROS):
                     camera_path - Project AirSim camera path
                     desired_pose_message_callback - Callback function to
                         process the ROS message into an Project AirSim message
-                    projectairsim_client - Client connection to Project AirSim
-                    ros_topics_manager - ROS topics manager
+                    topics_managers - Shared, serialized topic/service managers
                 """
                 self.refs = 1  # Number of "references" to this entry
-                self.projectairsim_client = (
-                    projectairsim_client
-                )  # Project AirSim client
+                self.topics_managers = topics_managers
                 self.desired_pose_message_callback = (
                     desired_pose_message_callback  # ROS message conversion callback
                 )
                 self.ros_topic_name = (
                     camera_path + "/desired_pose"
                 )  # ROS topic name we subscribe to
-                self.ros_topics_manager = ros_topics_manager  # ROS topics manager
+                self.ros_topics_manager = topics_managers.ros_topics_manager
                 self.service_method_set_pose = (
                     utils.get_sensor_path(camera_path) + "/SetPose"
                 )  # Project Airsim service method to set camera pose
@@ -1088,7 +1186,7 @@ class CameraBridgeToROS(BasicBridgeToROS):
                     )
                     self.ros_topic_name = None
 
-                self.projectairsim_client = None
+                self.topics_managers = None
                 self.desired_pose_message_callback = None
                 self.ros_topics_manager = None
 
@@ -1116,7 +1214,7 @@ class CameraBridgeToROS(BasicBridgeToROS):
                         pose = projectairsim.types.Pose(pose)
 
                         # Call set_pose service method directly so we don't need World and Drone objects
-                        self.projectairsim_client.request(
+                        self.topics_managers.request(
                             {
                                 "method": self.service_method_set_pose,
                                 "params": {"pose": pose},
@@ -1156,8 +1254,7 @@ class CameraBridgeToROS(BasicBridgeToROS):
                 self.cameras[camera_path] = self.CameraEntry(
                     camera_path,
                     desired_pose_message_callback,
-                    topics_managers.projectairsim_topics_manager.projectairsim_client,
-                    topics_managers.ros_topics_manager,
+                    topics_managers,
                 )
 
         def remove_camera(self, camera_path: str):
@@ -1421,8 +1518,8 @@ class CameraBridgeToROS(BasicBridgeToROS):
         self.camera_info.header.stamp = self.topics_managers.ros_node.get_time_now_msg()
         self.camera_info.header.frame_id = self.frame_id
 
-        self.camera_info.width = projectairsim_camera_info["width"]
-        self.camera_info.height = projectairsim_camera_info["height"]
+        self.camera_info.width = int(projectairsim_camera_info["width"])
+        self.camera_info.height = int(projectairsim_camera_info["height"])
         self.camera_info.distortion_model = projectairsim_camera_info[
             "distortion_model"
         ]
@@ -1436,82 +1533,45 @@ class CameraBridgeToROS(BasicBridgeToROS):
 
 
 # --------------------------------------------------------------------------
-class RobotPoseBridgeFromROS:
-    class Drone(projectairsim.Drone):
-        """
-        Subclass of projectairsim.Drone when a World object is not available.
-
-        Methods that take a sensor name must not be called but methods for
-        the camera sensor and others such as flight methods may be used.
-        """
-
-        def __init__(self, client: ProjectAirSimClient, robot_path: str):
-            self.parent_topic = robot_path
-            super().__init__(
-                client=client, world=None, robot_name=utils.get_robot_name(robot_path)
-            )
-
-        def log_topics(self):
-            pass
-
-        def set_topics(self, world: projectairsim.World):
-            self.sensors_topic = f"{self.parent_topic}/sensors"
-            self.set_robot_info_topics()
-
-        def get_barometer_data(self, sensor_name) -> Dict:
-            raise NotImplementedError()
-
-        def get_gps_data(self, sensor_name) -> Dict:
-            raise NotImplementedError()
-
-        def get_imu_data(self, sensor_name) -> Dict:
-            raise NotImplementedError()
-
-        def get_magnetometer_data(self, sensor_name) -> Dict:
-            raise NotImplementedError()
-
-    """
-    This class uses the BasicBridgeFromROS class to handle the desired_pose
-    and cmd_vel ROS pose topics and sends messages to the appropriate Project
-    AirSim topics or makes the appropriate Project AirSim service calls.
-
-    This class must be instantiated for the ".../desired_pose" Project AirSim
-    topic.
-    """
+class RobotControlHandler:
+    """Expose motion topics and ROS2 lifecycle services for one robot path."""
 
     def __init__(
         self,
-        projectairsim_topic_name: str,
-        ros_message_type,
+        robot_path: str,
         topics_managers: TopicsManagers,
+        desired_pose_topic_name: str = None,
+        cmd_vel_timeout_sec: float = 1.0,
+        takeoff_timeout_sec: float = 20.0,
+        land_timeout_sec: float = 60.0,
+        create_lifecycle_services: bool = False,
     ):
-        """
-        Constructor.
+        if not robot_path:
+            raise ValueError("robot_path must not be empty")
+        if cmd_vel_timeout_sec <= 0:
+            raise ValueError("cmd_vel_timeout_sec must be greater than zero")
+        if takeoff_timeout_sec <= 0:
+            raise ValueError("takeoff_timeout_sec must be greater than zero")
+        if land_timeout_sec <= 0:
+            raise ValueError("land_timeout_sec must be greater than zero")
 
-        Standard Arguments:
-            projectairsim_topic_name - Name of source Project AirSim topic
-            ros_message_type - Ignored
-            topics_managers - Topic and transform managers
-        """
-        if not projectairsim_topic_name.endswith("/desired_pose"):
-            raise ValueError(
-                f'{__class__} can only be used for ".../desired_pose" topics only, not "{projectairsim_topic_name}"'
+        self.robot_path = robot_path
+        self.method_path_move_by_velocity = robot_path + "/MoveByVelocity"
+        self.topics_managers = topics_managers
+        self.cmd_vel_timeout_sec = float(cmd_vel_timeout_sec)
+        self.takeoff_timeout_sec = float(takeoff_timeout_sec)
+        self.land_timeout_sec = float(land_timeout_sec)
+        self._services = []
+
+        self._basic_bridge_from_ros_desired_pose = None
+        if desired_pose_topic_name:
+            self._basic_bridge_from_ros_desired_pose = BasicBridgeFromROS(
+                desired_pose_topic_name,
+                rosgeommsg.PoseStamped,
+                topics_managers,
+                self.convert_desired_pose_from_ros,
             )
 
-        robot_path = utils.get_robot_path(projectairsim_topic_name)
-        self.method_path_move_by_velocity = robot_path + "/MoveByVelocity"
-
-        self.topics_managers = topics_managers
-
-        # Create bridge from ROS to Project AirSim desired_pose topics
-        self._basic_bridge_from_ros_desired_pose = BasicBridgeFromROS(
-            projectairsim_topic_name,
-            rosgeommsg.PoseStamped,
-            topics_managers,
-            self.convert_desired_pose_from_ros,
-        )
-
-        # Create handler for ROS cmd_vel topic
         self._basic_ros_subscriber_cmd_vel = BasicROSSubscriber(
             ros_topic_name=robot_path + "/cmd_vel",
             ros_message_type=rosgeommsg.Twist,
@@ -1519,12 +1579,37 @@ class RobotPoseBridgeFromROS:
             message_callback=self.handle_ros_cmd_vel,
         )
 
+        if create_lifecycle_services:
+            self._services = [
+                topics_managers.ros_node.create_service(
+                    robot_path + "/enable_api_control",
+                    rosstdsrv.SetBool,
+                    self.handle_enable_api_control,
+                ),
+                topics_managers.ros_node.create_service(
+                    robot_path + "/arm", rosstdsrv.SetBool, self.handle_arm
+                ),
+                topics_managers.ros_node.create_service(
+                    robot_path + "/takeoff", rosstdsrv.Trigger, self.handle_takeoff
+                ),
+                topics_managers.ros_node.create_service(
+                    robot_path + "/land", rosstdsrv.Trigger, self.handle_land
+                ),
+            ]
+
     def clear(self):
         """
         Stop handling messages and free resources.
         """
-        self._basic_bridge_from_ros_desired_pose.clear()
-        self._basic_ros_subscriber_cmd_vel.clear()
+        for service in self._services:
+            service.destroy()
+        self._services = []
+        if self._basic_bridge_from_ros_desired_pose:
+            self._basic_bridge_from_ros_desired_pose.clear()
+            self._basic_bridge_from_ros_desired_pose = None
+        if self._basic_ros_subscriber_cmd_vel:
+            self._basic_ros_subscriber_cmd_vel.clear()
+            self._basic_ros_subscriber_cmd_vel = None
 
     def convert_desired_pose_from_ros(self, ros_topic_name, ros_posestamped):
         """
@@ -1548,9 +1633,6 @@ class RobotPoseBridgeFromROS:
         return projectairsim_pose
 
     def handle_ros_cmd_vel(self, ros_topic_name: str, ros_twist: rosgeommsg.Twist):
-        projectairsim_client = (
-            self.topics_managers.projectairsim_topics_manager.projectairsim_client
-        )
         projectairsim_velocity = utils.to_projectairsim_position(ros_twist.linear)
         projectairsim_angular_rotation = utils.to_projectairsim_angular_rotation(
             ros_twist.angular
@@ -1558,20 +1640,101 @@ class RobotPoseBridgeFromROS:
 
         # Call MoveByVelocity service method directly so we don't need World and Drone objects
         self.topics_managers.logger.info(f"Setting velocity {projectairsim_velocity}")
-        projectairsim_client.request(
+        self.topics_managers.request(
             {
                 "method": self.method_path_move_by_velocity,
                 "params": {
                     "vx": projectairsim_velocity["x"],
                     "vy": projectairsim_velocity["y"],
                     "vz": projectairsim_velocity["z"],
-                    "duration": 1.0,  # Timeout to failsafe--updates must be received more frequent than this
+                    "duration": self.cmd_vel_timeout_sec,
                     "drivetrain": projectairsim.drone.YawControlMode.MaxDegreeOfFreedom,
                     "yaw_is_rate": True,
                     "yaw": projectairsim_angular_rotation["z"],
                 },
                 "version": 1.0,
             }
+        )
+
+    @staticmethod
+    def _set_response(response, success: bool, message: str):
+        response.success = bool(success)
+        response.message = message
+        return response
+
+    def _handle_service_request(
+        self, response, description, method, params=None, timeout_sec=None
+    ):
+        try:
+            request_data = {
+                "method": self.robot_path + "/" + method,
+                "params": {} if params is None else params,
+                "version": 1.0,
+            }
+            if timeout_sec is None:
+                result = self.topics_managers.request(request_data)
+            else:
+                result = self.topics_managers.request_async_blocking(
+                    request_data, timeout_sec
+                )
+            success = result is not False
+            message = (
+                f"{description} succeeded"
+                if success
+                else f"{description} was rejected by Project AirSim"
+            )
+            return self._set_response(response, success, message)
+        except Exception as exc:
+            self.topics_managers.logger.exception("%s failed", description)
+            return self._set_response(response, False, f"{description} failed: {exc}")
+
+    def handle_enable_api_control(self, request, response):
+        method = "EnableApiControl" if request.data else "DisableApiControl"
+        action = "Enable API control" if request.data else "Disable API control"
+        return self._handle_service_request(response, action, method)
+
+    def handle_arm(self, request, response):
+        method = "Arm" if request.data else "Disarm"
+        action = "Arm" if request.data else "Disarm"
+        return self._handle_service_request(response, action, method)
+
+    def handle_takeoff(self, request, response):
+        return self._handle_service_request(
+            response,
+            "Takeoff",
+            "Takeoff",
+            {"timeout_sec": self.takeoff_timeout_sec},
+            self.takeoff_timeout_sec,
+        )
+
+    def handle_land(self, request, response):
+        return self._handle_service_request(
+            response,
+            "Land",
+            "Land",
+            {"timeout_sec": self.land_timeout_sec},
+            self.land_timeout_sec,
+        )
+
+
+class RobotPoseBridgeFromROS(RobotControlHandler):
+    """Backward-compatible constructor for the original desired-pose handler."""
+
+    def __init__(
+        self,
+        projectairsim_topic_name: str,
+        ros_message_type,
+        topics_managers: TopicsManagers,
+    ):
+        if not projectairsim_topic_name.endswith("/desired_pose"):
+            raise ValueError(
+                "RobotPoseBridgeFromROS requires a .../desired_pose topic"
+            )
+        super().__init__(
+            robot_path=utils.get_robot_path(projectairsim_topic_name),
+            topics_managers=topics_managers,
+            desired_pose_topic_name=projectairsim_topic_name,
+            create_lifecycle_services=False,
         )
 
 

@@ -22,7 +22,7 @@ class ROS1Node(node.ROSNode):
 
         @property
         def topic_name(self):
-            return self.rclpy_publisher.topic_name
+            return None if self.rospy_publisher is None else self.rospy_publisher.name
 
         def __init__(
             self,
@@ -92,17 +92,39 @@ class ROS1Node(node.ROSNode):
 
         @property
         def topic_name(self):
-            return self.subscriber.topic_name
+            return (
+                None
+                if self.rospy_subscriber is None
+                else self.rospy_subscriber.name
+            )
 
         def __init__(self, topic: str, msg_type, callback):
             self.rospy_subscriber = rospy.Subscriber(
                 name=topic, data_class=msg_type, callback=callback
             )
 
+        def __del__(self):
+            self.destroy()
+
         def destroy(self):
             if self.rospy_subscriber:
                 self.rospy_subscriber.unregister()
                 self.rospy_subscriber = None
+
+    class Service(node.ROSNode.Service):
+        """Wrap a rospy service server behind the common node API."""
+
+        def __init__(self, topic, srv_type, callback):
+            def ros1_callback(request):
+                response = srv_type._response_class()
+                return callback(request, response)
+
+            self.rospy_service = rospy.Service(topic, srv_type, ros1_callback)
+
+        def destroy(self):
+            if self.rospy_service:
+                self.rospy_service.shutdown()
+                self.rospy_service = None
 
     # PointCloud2 class for ROS1
     PointCloud2 = sensor_msgs.point_cloud2
@@ -132,6 +154,7 @@ class ROS1Node(node.ROSNode):
         subscriber_listener=None,
         latch: bool = False,
         queue_size: int = 10,
+        qos_profile: str = "default",
     ):
         return ROS1Node.Publisher(
             topic=topic,
@@ -140,6 +163,9 @@ class ROS1Node(node.ROSNode):
             latch=latch,
             queue_size=queue_size,
         )
+
+    def create_service(self, topic: str, srv_type, callback):
+        return ROS1Node.Service(topic, srv_type, callback)
 
     def create_rate(self, frequency: float):
         return rospy.Rate(frequency)
@@ -150,7 +176,9 @@ class ROS1Node(node.ROSNode):
     def create_sensor_helper(self):
         return ROS1Node.SensorHelper()
 
-    def create_subscriber(self, topic: str, msg_type, callback=None):
+    def create_subscriber(
+        self, topic: str, msg_type, callback=None, qos_profile: str = "default"
+    ):
         return ROS1Node.Subscriber(topic=topic, msg_type=msg_type, callback=callback)
 
     def create_transform_broadcaster(self):

@@ -511,22 +511,30 @@ class TopicsManagers:
     def request_async_blocking(self, request_data, timeout_sec: float):
         """Run a cancellable Project AirSim async request for a ROS service."""
         self._ensure_async_loop()
-        future = asyncio.run_coroutine_threadsafe(
-            self._request_async(request_data, timeout_sec), self._async_loop
-        )
-        with self._pending_requests_lock:
-            self._pending_requests.add(future)
-        try:
-            with self._request_lock:
-                return future.result(timeout=max(1.0, timeout_sec) + 5.0)
-        except concurrent.futures.TimeoutError:
-            future.cancel()
-            raise TimeoutError(
-                f"Project AirSim request timed out after {timeout_sec} seconds"
+        # Flight-command timeout_sec is measured by the simulator clock, which
+        # can run slower than wall time while Unreal is under load.
+        transport_timeout_sec = max(30.0, 3.0 * timeout_sec)
+        # Schedule the flight operation only after taking the same lock used by
+        # synchronous cmd_vel requests. Otherwise a velocity request can slip
+        # in after Takeoff/Land is scheduled but before this thread acquires the
+        # lock, cancelling the lifecycle operation in the simulator.
+        with self._request_lock:
+            future = asyncio.run_coroutine_threadsafe(
+                self._request_async(request_data, timeout_sec), self._async_loop
             )
-        finally:
             with self._pending_requests_lock:
-                self._pending_requests.discard(future)
+                self._pending_requests.add(future)
+            try:
+                return future.result(timeout=transport_timeout_sec + 5.0)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                raise TimeoutError(
+                    "Project AirSim response timed out after "
+                    f"{transport_timeout_sec:.1f} wall-clock seconds"
+                )
+            finally:
+                with self._pending_requests_lock:
+                    self._pending_requests.discard(future)
 
     def cancel_pending_requests(self):
         """Cancel long-running requests, for example during a scene change."""
@@ -579,7 +587,11 @@ class TopicsManagers:
         task = await self.projectairsim_topics_manager.projectairsim_client.request_async(
             request_data
         )
-        return await asyncio.wait_for(task, timeout=max(1.0, timeout_sec))
+        # The simulator uses timeout_sec in simulation time. Unreal may run
+        # slower than real time, so do not apply the same value as a wall-clock
+        # receive deadline.
+        transport_timeout_sec = max(30.0, 3.0 * timeout_sec)
+        return await asyncio.wait_for(task, timeout=transport_timeout_sec)
 
 
 # --------------------------------------------------------------------------

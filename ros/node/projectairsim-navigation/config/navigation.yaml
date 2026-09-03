@@ -1,0 +1,13 @@
+/**:
+  ros__parameters:
+    velocity_filter_alpha: 0.2
+    control_rate_hz: 50.0
+    position_gain: 1.5
+    yaw_gain: 5.0
+    max_speed: 4.0
+    trajectory_speed: 1.5
+    max_yaw_rate: 1.0471975512
+    state_timeout_sec: 0.2
+    goal_tolerance: 0.25
+    yaw_tolerance: 0.1745329252
+    path_samples: 50

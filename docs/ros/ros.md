@@ -183,6 +183,17 @@ colcon test-result --verbose
 
 An end-to-end check requires a running Blocks environment. Verify lifecycle services, pose movement from `cmd_vel`, camera images and `CameraInfo`, configured IMU/lidar/radar topics, scene replacement, landing, and clean shutdown.
 
+## Minimal waypoint navigation
+
+The optional `projectairsim_navigation` package provides a small ROS 2 navigation
+example using simulator ground truth, a smooth straight-line trajectory, and a
+velocity feedback controller. It intentionally has no mapping or collision
+avoidance. See [`ros/node/projectairsim-navigation/README.md`](../../ros/node/projectairsim-navigation/README.md)
+for its interfaces, build command, launch instructions, and safety limitations.
+The bridge must have an active scene before robot pose topics and lifecycle
+services exist; use its `load_scene` topic or the navigation package's combined
+launch file to load one.
+
 ---
 
 Copyright (C) Microsoft Corporation.  

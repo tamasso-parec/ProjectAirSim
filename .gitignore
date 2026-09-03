@@ -376,3 +376,10 @@ env/
 # Simulink cache
 **/slprj
 *.slxc
+
+
+*venv*
+
+install/
+unreal/Blocks/DerivedDataCache/
+unreal/Blocks/Samples/

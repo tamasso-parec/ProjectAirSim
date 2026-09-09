@@ -14,6 +14,10 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <!-- Optional: only required to launch projectairsim_px4_bridge.launch.py for PX4 offboard
+       control. Install with ros-humble-mavros and ros-humble-mavros-extras, then run
+       `ros2 run mavros install_geographiclib_datasets.sh`. -->
+  <exec_depend>mavros</exec_depend>
 
   <test_depend>ament_pytest</test_depend>
   <test_depend>launch_testing</test_depend>

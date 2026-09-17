@@ -1,0 +1,61 @@
+#!/bin/sh
+#
+# @name Holybro X500 Quadrotor SITL (external simulator)
+#
+# @type Quadrotor Wide
+#
+# X500 airframe for a simulator that reaches PX4 over the MAVLink simulator
+# link (simulator_mavlink, TCP 4560), which is how Project AirSim connects.
+#
+# PX4's own x500 airframe, 4001_gz_x500, sets PX4_SIMULATOR=gz and SIM_GZ_EN,
+# which routes PX4 to its Gazebo bridge instead. This file deliberately sets
+# neither, so px4-rc.simulator falls through to px4-rc.mavlinksim. Everything
+# else matches 4001_gz_x500 so that control allocation is identical.
+#
+# Install it into a PX4 checkout with:
+#
+#   ros/node/projectairsim-ros2/config/px4_airframes/install_px4_airframes.sh \
+#     /path/to/PX4-Autopilot
+#
+# then rebuild PX4 and launch with PX4_SYS_AUTOSTART=10020.
+
+. ${R}etc/init.d/rc.mc_defaults
+
+param set-default CA_AIRFRAME 0
+param set-default CA_ROTOR_COUNT 4
+
+# Rotor geometry in PX4's FRD body frame: +X forward, +Y right. The X500's
+# arms are 0.174 m in each direction. KM is the moment coefficient, whose sign
+# sets each rotor's turning direction; these must agree with the
+# turning-direction fields in robot_x500_realsense_px4_sitl.jsonc.
+param set-default CA_ROTOR0_PX 0.174
+param set-default CA_ROTOR0_PY 0.174
+param set-default CA_ROTOR0_KM 0.05
+
+param set-default CA_ROTOR1_PX -0.174
+param set-default CA_ROTOR1_PY -0.174
+param set-default CA_ROTOR1_KM 0.05
+
+param set-default CA_ROTOR2_PX 0.174
+param set-default CA_ROTOR2_PY -0.174
+param set-default CA_ROTOR2_KM -0.05
+
+param set-default CA_ROTOR3_PX -0.174
+param set-default CA_ROTOR3_PY 0.174
+param set-default CA_ROTOR3_KM -0.05
+
+# The MAVLink simulator link carries actuator outputs as PWM main channels,
+# where 101..104 are motors 1..4, rather than through the SIM_GZ_EC_* outputs
+# the gz airframe uses.
+param set-default PWM_MAIN_FUNC1 101
+param set-default PWM_MAIN_FUNC2 102
+param set-default PWM_MAIN_FUNC3 103
+param set-default PWM_MAIN_FUNC4 104
+
+# Project AirSim's rotor model is linear in the normalized actuator command,
+# so hover sits at weight / total max thrust = 20.24 N / 34.19 N = 0.59.
+param set-default MPC_THR_HOVER 0.6
+
+# Do not fail the mission on a data link loss: the companion computer, not a
+# GCS, is flying this vehicle.
+param set-default NAV_DLL_ACT 0

@@ -41,6 +41,8 @@ def test_px4_bridge_launch_description_exposes_all_parameters():
         "cmd_vel_timeout_sec",
         "takeoff_timeout_sec",
         "land_timeout_sec",
+        "interface_profile",
+        "use_sim_time",
         "fcu_url",
         "gcs_url",
         "tgt_system",

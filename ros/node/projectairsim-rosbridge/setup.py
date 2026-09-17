@@ -21,5 +21,12 @@ setup(
     install_requires=[
         "projectairsim",
         "numpy",
+        "pyyaml",
     ],
+    # colcon only selects its pytest test step for packages that declare a
+    # test dependency on pytest; without this it falls back to the
+    # unittest-based "setup.py test" and collects nothing.  The "test" extra
+    # is used rather than the deprecated tests_require, which current
+    # setuptools drops from the metadata colcon reads.
+    extras_require={"test": ["pytest"]},
 )

@@ -30,8 +30,10 @@ from projectairsim import ProjectAirSimClient
 from projectairsim.utils import projectairsim_log
 
 from . import utils
+from .interface_profile import InterfaceProfile
 from .msg_converter import MsgConverter
 from .node import ROSNode
+from .sim_time import SimTimeSource
 from .topic_helpers import (
     BasicBridgeToROS,
     BasicROSSubscriber,
@@ -173,6 +175,10 @@ class ProjectAirSimROSBridge:
     # Topic name prefix for persistent (non-scene based) topic handlers
     HANDLER_PREFIX_PERSISTENT = "//./"
 
+    # Project AirSim camera image types that carry depth, and so are the only
+    # ones a point cloud can be reprojected from.
+    DEPTH_IMAGE_TYPE_SUFFIXES = ("/depth_planar_camera", "/depth_camera")
+
     # -------------------------------------------------------------------------
     # ProjectAirSimROSBridge Properties
     # -------------------------------------------------------------------------
@@ -199,6 +205,8 @@ class ProjectAirSimROSBridge:
         cmd_vel_timeout_sec: float = 1.0,
         takeoff_timeout_sec: float = 20.0,
         land_timeout_sec: float = 60.0,
+        interface_profile=None,
+        use_sim_time: bool = False,
     ):
         """
         Constructor.
@@ -230,10 +238,43 @@ class ProjectAirSimROSBridge:
             cmd_vel_timeout_sec - Velocity-command failsafe duration
             takeoff_timeout_sec - Maximum takeoff service duration
             land_timeout_sec - Maximum landing service duration
+            interface_profile - An InterfaceProfile, a path to a profile YAML
+                file, or None for the bridge's default names and conventions
+            use_sim_time - If true, enable simulated time even when the
+                profile does not.  ROS 2 callers pass their node's standard
+                use_sim_time parameter here.
         """
         # TODO: make dynamic limits class or rosparam?
 
-        self.msg_converter = MsgConverter(ros_node)  # Topic message converter
+        # Resolve the interface profile first: it decides the frame
+        # convention, simulated-time behaviour and depth encoding that every
+        # other component below is constructed with.
+        if isinstance(interface_profile, InterfaceProfile):
+            self.interface_profile = interface_profile
+        else:
+            self.interface_profile = InterfaceProfile.from_file(
+                interface_profile if interface_profile else ""
+            )
+
+        self.coords = self.interface_profile.create_coordinate_converter()
+        # The module-level conversion helpers are part of the bridge's public
+        # surface, so point them at the configured convention too.
+        utils.set_default_coordinate_converter(self.coords)
+
+        self.sim_time = SimTimeSource(
+            ros_node,
+            enabled=self.interface_profile.sim_time.enabled or bool(use_sim_time),
+            clock_topic=self.interface_profile.sim_time.clock_topic,
+            min_step_nanos=self.interface_profile.sim_time.min_step_nanos,
+            logger=logger if logger is not None else projectairsim_log(),
+        )
+
+        self.msg_converter = MsgConverter(
+            ros_node,
+            sim_time=self.sim_time,
+            coords=self.coords,
+            depth=self.interface_profile.depth,
+        )  # Topic message converter
 
         # List of Project AirSim topics we'll bridge to ROS.  Each Project AirSim
         # topic name is matched against this list in this order and the first
@@ -270,6 +311,7 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
+                points_message_callback=self.msg_converter.convert_depth_image_to_point_cloud,
             ),
             self.TopicEntry(
                 self.TopicEntry.MatchType.ENDS_WITH,
@@ -278,6 +320,7 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
+                points_message_callback=self.msg_converter.convert_depth_image_to_point_cloud,
             ),
             self.TopicEntry(
                 self.TopicEntry.MatchType.ENDS_WITH,
@@ -286,6 +329,7 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
+                points_message_callback=self.msg_converter.convert_depth_image_to_point_cloud,
             ),
             self.TopicEntry(
                 self.TopicEntry.MatchType.ENDS_WITH,
@@ -294,6 +338,7 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
+                points_message_callback=self.msg_converter.convert_depth_image_to_point_cloud,
             ),
             self.TopicEntry(
                 self.TopicEntry.MatchType.ENDS_WITH,
@@ -343,6 +388,7 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
+                points_message_callback=self.msg_converter.convert_depth_image_to_point_cloud,
             ),
             self.TopicEntry(
                 self.TopicEntry.MatchType.ENDS_WITH,
@@ -351,6 +397,7 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
+                points_message_callback=self.msg_converter.convert_depth_image_to_point_cloud,
             ),
             self.TopicEntry(
                 self.TopicEntry.MatchType.ENDS_WITH,
@@ -359,8 +406,26 @@ class ProjectAirSimROSBridge:
                 topic_handler_type=CameraBridgeToROS,
                 image_message_callback=self.msg_converter.convert_image_to_ros,
                 desired_pose_message_callback=self.msg_converter.convert_desired_pose_from_ros,
+                points_message_callback=self.msg_converter.convert_depth_image_to_point_cloud,
             ),
         ]
+
+        if self.interface_profile.collision.enabled:
+            self.topic_entries.append(
+                self.TopicEntry(
+                    self.TopicEntry.MatchType.ENDS_WITH,
+                    "/collision_info",
+                    # Importing here rather than at module scope keeps
+                    # ros_gz_interfaces optional for everyone who does not ask
+                    # for Gazebo-shaped collision reports.
+                    MsgConverter._gz_interfaces_msgs().Contacts,
+                    topic_handler_type=BasicBridgeToROS,
+                    message_callback=(
+                        self.msg_converter.convert_collision_info_to_gz_contacts
+                    ),
+                    ros_topic_is_latching=False,
+                )
+            )
 
         # Initialize data members
         self.projectairsim_client = client  # Connection to Project AirSim
@@ -396,6 +461,10 @@ class ProjectAirSimROSBridge:
         else:
             self.logger = logger
 
+        # Report the effective profile before connecting, so the settings are
+        # on record even when the connection to Project AirSim then fails.
+        self._log_interface_profile()
+
         # Create and connect to Project AirSim client if one wasn't given
         if self.projectairsim_client is not None:
             self.is_client_ours = False
@@ -410,7 +479,11 @@ class ProjectAirSimROSBridge:
 
         # Create topic managers
         self.topics_managers = TopicsManagers(
-            self.projectairsim_client, self.ros_node, self.logger
+            self.projectairsim_client,
+            self.ros_node,
+            self.logger,
+            sim_time=self.sim_time,
+            coords=self.coords,
         )
 
         # Register ROS shutdown hook
@@ -438,20 +511,30 @@ class ProjectAirSimROSBridge:
 
     def clear(self):
         """
-        Stop processing and free resources
+        Stop processing and free resources.
+
+        Construction can fail part-way through, for instance on an invalid
+        interface profile or a refused connection to Project AirSim, and
+        Python still calls the destructor on the half-built object.  Attributes
+        are therefore read defensively so that tearing down cannot raise an
+        AttributeError that masks the original failure.
         """
         self.stop_ros()
-        if self.topics_managers is not None:
-            self.topics_managers.close()
-        if self.projectairsim_client is not None and self.is_connected_to_client:
-            self.is_connected_to_client = False
-            if self.is_client_ours:
-                self.projectairsim_client.disconnect()
-            self.projectairsim_client = None
-        if (self.topics_managers is not None) and (
-            self.topics_managers.tf_broadcaster is not None
+        topics_managers = getattr(self, "topics_managers", None)
+        if topics_managers is not None:
+            topics_managers.close()
+        projectairsim_client = getattr(self, "projectairsim_client", None)
+        if projectairsim_client is not None and getattr(
+            self, "is_connected_to_client", False
         ):
-            self.topics_managers.tf_broadcaster.clear()
+            self.is_connected_to_client = False
+            if getattr(self, "is_client_ours", False):
+                projectairsim_client.disconnect()
+            self.projectairsim_client = None
+        if (topics_managers is not None) and (
+            topics_managers.tf_broadcaster is not None
+        ):
+            topics_managers.tf_broadcaster.clear()
             self.topics_managers = None
 
         self.ros_node = None
@@ -461,6 +544,7 @@ class ProjectAirSimROSBridge:
         Start ROS topic processing.
         """
         self.ros_is_started = True
+        self.sim_time.start()
         self.update_topics()
         self.topics_managers.tf_broadcaster.start()
 
@@ -468,9 +552,14 @@ class ProjectAirSimROSBridge:
         """
         Shutdown ROS topics processing
         """
-        if self.topics_managers is not None:
-            self.topics_managers.tf_broadcaster.stop()
-        self._drop_handlers()
+        topics_managers = getattr(self, "topics_managers", None)
+        if topics_managers is not None:
+            topics_managers.tf_broadcaster.stop()
+        if hasattr(self, "topic_handlers"):
+            self._drop_handlers()
+        sim_time = getattr(self, "sim_time", None)
+        if sim_time is not None:
+            sim_time.stop()
         self.ros_is_started = False
 
     def update_topics(self):
@@ -502,7 +591,9 @@ class ProjectAirSimROSBridge:
                         robot_path = utils.get_robot_path(topic_name)
                         if robot_path is not None:
                             robot_paths_new[topic_name] = robot_path
-                        robot_base_frame_id = utils.get_robot_frame_id(topic_name)
+                        robot_base_frame_id = self.interface_profile.resolve_frame(
+                            robot_path, utils.get_robot_frame_id(topic_name)
+                        )
                         if robot_base_frame_id is not None:
                             robot_base_frame_ids_new[topic_name] = robot_base_frame_id
 
@@ -511,12 +602,17 @@ class ProjectAirSimROSBridge:
                             # Have an existing handler for the topic--reuse it
                             topic_handler = self.topic_handlers.pop(topic_name)
                         else:
-                            # Create a new handler for the topic
+                            # Create a new handler for the topic, applying the
+                            # interface profile's topic and frame aliases
+                            handler_params = dict(topic_entry.topic_handler_params)
+                            handler_params.update(
+                                self._resolve_handler_params(topic_name, topic_entry)
+                            )
                             topic_handler = topic_entry.topic_handler_type(
                                 projectairsim_topic_name=topic_name,
                                 ros_message_type=topic_entry.ros_message_type,
                                 topics_managers=self.topics_managers,
-                                **topic_entry.topic_handler_params,
+                                **handler_params,
                             )
 
                         topic_handlers_new[topic_name] = topic_handler
@@ -552,6 +648,129 @@ class ProjectAirSimROSBridge:
         self.msg_converter.set_robot_base_frame_ids(robot_base_frame_ids_new)
 
         # Refresh topic handlers
+
+    def _resolve_handler_params(self, topic_name: str, topic_entry) -> dict:
+        """
+        Return the topic handler constructor arguments implied by the
+        interface profile for one Project AirSim topic.
+
+        Handlers fall into four groups with different naming and transform
+        needs, so each is resolved separately.  The returned values override
+        the defaults declared on the topic entry.
+
+        Arguments:
+            topic_name - Project AirSim topic name
+            topic_entry - The TopicEntry matching the topic
+
+        Returns:
+            (return) - Constructor keyword arguments
+        """
+        profile = self.interface_profile
+        handler_type = topic_entry.topic_handler_type
+        params = {}
+
+        # Cameras publish an image and a camera info topic, so a single alias
+        # is not enough to name them.
+        if issubclass(handler_type, CameraBridgeToROS):
+            camera_topics = profile.resolve_camera_topics(topic_name)
+            params["ros_topic_name_image"] = camera_topics.image
+            params["ros_topic_name_camera_info"] = camera_topics.camera_info
+            params["points_settings"] = profile.points
+            if camera_topics.points:
+                if topic_name.endswith(self.DEPTH_IMAGE_TYPE_SUFFIXES):
+                    params["ros_topic_name_points"] = camera_topics.points
+                else:
+                    self.logger.warning(
+                        f'Ignoring the point cloud topic "{camera_topics.points}" '
+                        f'requested for "{topic_name}": a point cloud can only '
+                        "be reprojected from a depth image type "
+                        f"({', '.join(self.DEPTH_IMAGE_TYPE_SUFFIXES)})"
+                    )
+            params["publish_tf"] = profile.tf.publish_sensor_tf
+            params["frame_id_parent"] = profile.world_frame
+            frame_id = profile.resolve_frame(utils.get_sensor_path(topic_name))
+            if frame_id is not None:
+                params["frame_id"] = frame_id
+            return params
+
+        # Other sensors publish one topic and broadcast their own frame.
+        if issubclass(handler_type, SensorBridgeToROS):
+            ros_topic_name = profile.resolve_topic(topic_name)
+            if ros_topic_name is not None:
+                params["ros_topic_name"] = ros_topic_name
+            params["publish_tf"] = profile.tf.publish_sensor_tf
+            params["frame_id_parent"] = profile.world_frame
+            frame_id = profile.resolve_frame(utils.get_sensor_path(topic_name))
+            if frame_id is not None:
+                params["frame_id"] = frame_id
+            return params
+
+        # The robot pose names the vehicle's own frame.
+        if issubclass(handler_type, RobotPoseBridgeToROS):
+            ros_topic_name = profile.resolve_topic(topic_name)
+            if ros_topic_name is not None:
+                params["ros_topic_name"] = ros_topic_name
+            if profile.tf.ground_truth_topic:
+                params["ground_truth_tf_topic"] = profile.tf.ground_truth_topic
+            params["publish_tf"] = profile.tf.publish_robot_tf
+            params["frame_id_parent"] = profile.world_frame
+            frame_id = profile.resolve_frame(utils.get_robot_path(topic_name))
+            if frame_id is not None:
+                params["frame_id"] = frame_id
+            return params
+
+        # Everything else just publishes one topic.
+        if issubclass(handler_type, BasicBridgeToROS):
+            ros_topic_name = profile.resolve_topic(topic_name)
+            if ros_topic_name is not None:
+                params["ros_topic_name"] = ros_topic_name
+
+        return params
+
+    def _log_interface_profile(self):
+        """
+        Log the effective interface profile.
+
+        Topic names, frame conventions and simulated time are the settings
+        that most often explain "the topic is there but nothing arrives", so
+        record what is actually in force.
+        """
+        profile = self.interface_profile
+        self.logger.info(
+            f"Interface profile: {profile.source}; "
+            f"frame convention {profile.frame_convention}; "
+            f"world frame {profile.world_frame}; "
+            f"depth {profile.depth.encoding}"
+            + (
+                f" clamped to {profile.depth.max_range_m} m"
+                if profile.depth.max_range_m > 0.0
+                else ""
+            )
+        )
+        if profile.sim_time.enabled:
+            self.logger.info(
+                "Simulated time enabled: publishing "
+                f"{profile.sim_time.clock_topic} from Project AirSim "
+                "message timestamps. Run ROS nodes with use_sim_time set."
+            )
+        else:
+            self.logger.info(
+                "Simulated time disabled: messages are stamped with the ROS "
+                "wall clock"
+            )
+        if not profile.tf.publish_robot_tf:
+            self.logger.info("Robot transform broadcast disabled by profile")
+        if not profile.tf.publish_sensor_tf:
+            self.logger.info("Sensor transform broadcast disabled by profile")
+        if profile.tf.ground_truth_topic:
+            self.logger.info(
+                "Publishing ground truth robot transforms on "
+                f"{profile.tf.ground_truth_topic}"
+            )
+        if profile.collision.enabled:
+            self.logger.info(
+                f"Collision reporting enabled as {profile.collision.message}"
+            )
 
     def _clear_handlers(self):
         """
@@ -608,6 +827,9 @@ class ProjectAirSimROSBridge:
             try:
                 # Clear existing scene-based handlers
                 self._drop_handlers_for_scene()
+
+                # The simulator restarts its clock with the new scene.
+                self.sim_time.reset()
 
                 # Load scene and update ROS topics to match the new scene
                 projectairsim.World(

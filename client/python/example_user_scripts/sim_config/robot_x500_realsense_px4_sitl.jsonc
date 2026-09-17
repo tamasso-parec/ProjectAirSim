@@ -1,0 +1,439 @@
+{
+  // Holybro X500 quadrotor with a forward-facing RealSense D435, flown by PX4
+  // SITL over the MAVLink simulator link.
+  //
+  // This mirrors the Gazebo `x500_realsense` model used by PX4's gz simulation
+  // so that a navigation stack developed against that model sees the same
+  // vehicle here. Every physical number below is derived from PX4's
+  // Tools/simulation/gz/models/x500_base and x500 model.sdf; see
+  // docs/ros/ros.md for the derivation and its limits.
+  //
+  // Pair with PX4 airframe 10020_none_x500 (shipped in
+  // ros/node/projectairsim-ros2/config/px4_airframes/) rather than the gz
+  // airframe, because PX4 reaches this simulator over simulator_mavlink
+  // rather than its gz bridge.
+  "physics-type": "fast-physics",
+  "links": [
+    {
+      "name": "Frame",
+      "inertial": {
+        // x500_base base_link: 2.0 kg with an explicit inertia tensor.
+        "mass": 2.0,
+        "inertia": {
+          "type": "matrix",
+          "ixx": 0.02166666666666667,
+          "iyy": 0.02166666666666667,
+          "izz": 0.04000000000000001
+        },
+        "aerodynamics": {
+          "drag-coefficient": 0.325,
+          "type": "geometry",
+          "geometry": {
+            "box": {
+              // Approximate X500 body envelope.
+              "size": "0.180 0.110 0.040"
+            }
+          }
+        }
+      },
+      "collision": {
+        "restitution": 0.1,
+        "friction": 0.5
+      },
+      "visual": {
+        "geometry": {
+          "type": "unreal_mesh",
+          "name": "/Drone/Quadrotor1"
+        }
+      }
+    },
+    {
+      // Rotor arm positions are PX4's CA_ROTOR*_P{X,Y} for the x500, in the
+      // FRD body frame: +X forward, +Y right. Rotor mass and inertia are from
+      // x500_base's rotor links.
+      "name": "Prop_FR",
+      "inertial": {
+        "origin": {
+          "xyz": "0.174 0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "mass": 0.016076923076923075,
+        "inertia": {
+          "type": "point-mass"
+        },
+        "aerodynamics": {
+          "drag-coefficient": 0.325,
+          "type": "geometry",
+          "geometry": {
+            "cylinder": {
+              "radius": 0.127,
+              "length": 0.01
+            }
+          }
+        }
+      },
+      "visual": {
+        "origin": {
+          "xyz": "0.174 0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "geometry": {
+          "type": "unreal_mesh",
+          "name": "/Drone/PropellerRed"
+        }
+      }
+    },
+    {
+      "name": "Prop_RL",
+      "inertial": {
+        "origin": {
+          "xyz": "-0.174 -0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "mass": 0.016076923076923075,
+        "inertia": {
+          "type": "point-mass"
+        },
+        "aerodynamics": {
+          "drag-coefficient": 0.325,
+          "type": "geometry",
+          "geometry": {
+            "cylinder": {
+              "radius": 0.127,
+              "length": 0.01
+            }
+          }
+        }
+      },
+      "visual": {
+        "origin": {
+          "xyz": "-0.174 -0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "geometry": {
+          "type": "unreal_mesh",
+          "name": "/Drone/PropellerWhite"
+        }
+      }
+    },
+    {
+      "name": "Prop_FL",
+      "inertial": {
+        "origin": {
+          "xyz": "0.174 -0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "mass": 0.016076923076923075,
+        "inertia": {
+          "type": "point-mass"
+        },
+        "aerodynamics": {
+          "drag-coefficient": 0.325,
+          "type": "geometry",
+          "geometry": {
+            "cylinder": {
+              "radius": 0.127,
+              "length": 0.01
+            }
+          }
+        }
+      },
+      "visual": {
+        "origin": {
+          "xyz": "0.174 -0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "geometry": {
+          "type": "unreal_mesh",
+          "name": "/Drone/PropellerRed"
+        }
+      }
+    },
+    {
+      "name": "Prop_RR",
+      "inertial": {
+        "origin": {
+          "xyz": "-0.174 0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "mass": 0.016076923076923075,
+        "inertia": {
+          "type": "point-mass"
+        },
+        "aerodynamics": {
+          "drag-coefficient": 0.325,
+          "type": "geometry",
+          "geometry": {
+            "cylinder": {
+              "radius": 0.127,
+              "length": 0.01
+            }
+          }
+        }
+      },
+      "visual": {
+        "origin": {
+          "xyz": "-0.174 0.174 -0.06",
+          "rpy-deg": "0 0 0"
+        },
+        "geometry": {
+          "type": "unreal_mesh",
+          "name": "/Drone/PropellerWhite"
+        }
+      }
+    }
+  ],
+  "joints": [
+    {
+      "id": "Frame_Prop_FR",
+      "type": "fixed",
+      "parent-link": "Frame",
+      "child-link": "Prop_FR",
+      "axis": "0 0 1"
+    },
+    {
+      "id": "Frame_Prop_RL",
+      "type": "fixed",
+      "parent-link": "Frame",
+      "child-link": "Prop_RL",
+      "axis": "0 0 1"
+    },
+    {
+      "id": "Frame_Prop_FL",
+      "type": "fixed",
+      "parent-link": "Frame",
+      "child-link": "Prop_FL",
+      "axis": "0 0 1"
+    },
+    {
+      "id": "Frame_Prop_RR",
+      "type": "fixed",
+      "parent-link": "Frame",
+      "child-link": "Prop_RR",
+      "axis": "0 0 1"
+    }
+  ],
+  "controller": {
+    "id": "PX4_Controller",
+    "type": "px4-api",
+    "px4-settings": {
+      "lock-step": true,
+      "use-serial": false,
+      "use-tcp": true,
+      "tcp-port": 4560,
+      "control-ip-address": "127.0.0.1",
+      "control-port": 14540,
+      "qgc-host-ip": "",
+      "qgc-port": 14550,
+      "parameters": {
+        "NAV_RCL_ACT": 0,
+        "NAV_DLL_ACT": 0,
+        "COM_OBL_ACT": 1,
+        "LPE_LAT": 47.641468,
+        "LPE_LON": -122.140165
+      },
+      // Order must match PX4's control allocation: index 0 is CA_ROTOR0 and
+      // so on. For the x500 airframe that is FR, RL, FL, RR.
+      "actuator-order": [
+        {
+          "id": "Prop_FR_actuator"
+        },
+        {
+          "id": "Prop_RL_actuator"
+        },
+        {
+          "id": "Prop_FL_actuator"
+        },
+        {
+          "id": "Prop_RR_actuator"
+        }
+      ]
+    }
+  },
+  "actuators": [
+    // Rotor coefficients reproduce the Gazebo x500's thrust and torque
+    // envelope. Gazebo's MulticopterMotorModel uses
+    //   thrust = motorConstant * w^2, torque = momentConstant * thrust
+    // with motorConstant 8.54858e-06, momentConstant 0.016 and
+    // maxRotVelocity 1000 rad/s, giving 8.54858 N and 0.136777 N.m per rotor.
+    //
+    // Project AirSim uses
+    //   max_thrust = Ct * rho * n^2 * D^4
+    //   max_torque = Cq * rho * n^2 * D^5 / (2*pi)
+    // with n in rev/s and rho 1.225. At 1000 rad/s (9549.297 rpm) and a
+    // 10-inch (0.254 m) propeller that inverts to the coefficients below,
+    // which reproduce the Gazebo values to within one part in a billion.
+    //
+    // Total max thrust is 34.19 N against a 2.064 kg airframe, so the
+    // thrust-to-weight ratio is 1.69 and hover sits at 59% throttle, which is
+    // why the paired PX4 airframe keeps MPC_THR_HOVER at 0.6.
+    //
+    // Turning directions follow the sign of PX4's CA_ROTOR*_KM for the x500:
+    // FR and RL share one direction, FL and RR the other.
+    {
+      "name": "Prop_FR_actuator",
+      "type": "rotor",
+      "enabled": true,
+      "parent-link": "Frame",
+      "child-link": "Prop_FR",
+      "origin": {
+        "xyz": "0.174 0.174 -0.06",
+        "rpy-deg": "0 0 0"
+      },
+      "rotor-settings": {
+        "turning-direction": "counter-clock-wise",
+        "normal-vector": "0.0 0.0 -1.0",
+        "coeff-of-thrust": 0.066188534,
+        "coeff-of-torque": 0.026196839,
+        "max-rpm": 9549.296586,
+        "propeller-diameter": 0.254,
+        "smoothing-tc": 0.005
+      }
+    },
+    {
+      "name": "Prop_RL_actuator",
+      "type": "rotor",
+      "enabled": true,
+      "parent-link": "Frame",
+      "child-link": "Prop_RL",
+      "origin": {
+        "xyz": "-0.174 -0.174 -0.06",
+        "rpy-deg": "0 0 0"
+      },
+      "rotor-settings": {
+        "turning-direction": "counter-clock-wise",
+        "normal-vector": "0.0 0.0 -1.0",
+        "coeff-of-thrust": 0.066188534,
+        "coeff-of-torque": 0.026196839,
+        "max-rpm": 9549.296586,
+        "propeller-diameter": 0.254,
+        "smoothing-tc": 0.005
+      }
+    },
+    {
+      "name": "Prop_FL_actuator",
+      "type": "rotor",
+      "enabled": true,
+      "parent-link": "Frame",
+      "child-link": "Prop_FL",
+      "origin": {
+        "xyz": "0.174 -0.174 -0.06",
+        "rpy-deg": "0 0 0"
+      },
+      "rotor-settings": {
+        "turning-direction": "clock-wise",
+        "normal-vector": "0.0 0.0 -1.0",
+        "coeff-of-thrust": 0.066188534,
+        "coeff-of-torque": 0.026196839,
+        "max-rpm": 9549.296586,
+        "propeller-diameter": 0.254,
+        "smoothing-tc": 0.005
+      }
+    },
+    {
+      "name": "Prop_RR_actuator",
+      "type": "rotor",
+      "enabled": true,
+      "parent-link": "Frame",
+      "child-link": "Prop_RR",
+      "origin": {
+        "xyz": "-0.174 0.174 -0.06",
+        "rpy-deg": "0 0 0"
+      },
+      "rotor-settings": {
+        "turning-direction": "clock-wise",
+        "normal-vector": "0.0 0.0 -1.0",
+        "coeff-of-thrust": 0.066188534,
+        "coeff-of-torque": 0.026196839,
+        "max-rpm": 9549.296586,
+        "propeller-diameter": 0.254,
+        "smoothing-tc": 0.005
+      }
+    }
+  ],
+  "sensors": [
+    {
+      // Forward-facing RealSense D435, matching the Gazebo model's rgbd_camera
+      // sensor: 640x480 at 30 Hz with a 60 degree horizontal field of view.
+      //
+      // That FOV and width give fx = fy = (640/2) / tan(30 deg) = 554.2547 and
+      // a principal point at the image centre, which is the intrinsic matrix a
+      // stack calibrated against the Gazebo model already expects.
+      //
+      // Mounted at the same offset as the Gazebo model's CameraJoint:
+      // 0.14 m forward and 0.21 m above the body origin, which is -0.21 in
+      // this NED-style frame.
+      "id": "RGBD",
+      "type": "camera",
+      "enabled": true,
+      "parent-link": "Frame",
+      "capture-interval": 0.0333333,
+      "capture-settings": [
+        {
+          // Colour.
+          "image-type": 0,
+          "width": 640,
+          "height": 480,
+          "fov-degrees": 60,
+          "capture-enabled": true,
+          "streaming-enabled": false,
+          "pixels-as-float": false,
+          "compress": false,
+          "target-gamma": 2.5
+        },
+        {
+          // Planar (Z) depth, the same quantity a Gazebo depth camera or a
+          // RealSense publishes. Image type 2 is perspective distance instead.
+          "image-type": 1,
+          "width": 640,
+          "height": 480,
+          "fov-degrees": 60,
+          "capture-enabled": true,
+          "streaming-enabled": false,
+          "pixels-as-float": false,
+          "compress": false
+        }
+      ],
+      "origin": {
+        "xyz": "0.14 0.0 -0.21",
+        "rpy-deg": "0 0 0"
+      }
+    },
+    {
+      "id": "IMU1",
+      "type": "imu",
+      "enabled": true,
+      "parent-link": "Frame",
+      "accelerometer": {
+        "velocity-random-walk": 2.353e-3,
+        "tau": 800,
+        "bias-stability": 3.53e-4,
+        "turn-on-bias": "0 0 0"
+      },
+      "gyroscope": {
+        "angle-random-walk": 8.72644e-5,
+        "tau": 500,
+        "bias-stability": 2.23014e-5,
+        "turn-on-bias": "0 0 0"
+      }
+    },
+    {
+      "id": "GPS",
+      "type": "gps",
+      "enabled": true,
+      "parent-link": "Frame"
+    },
+    {
+      "id": "Barometer",
+      "type": "barometer",
+      "enabled": true,
+      "parent-link": "Frame"
+    },
+    {
+      "id": "Magnetometer",
+      "type": "magnetometer",
+      "enabled": true,
+      "parent-link": "Frame"
+    }
+  ]
+}

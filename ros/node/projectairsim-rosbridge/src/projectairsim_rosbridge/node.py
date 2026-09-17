@@ -254,6 +254,22 @@ class ROSNode(ABC):
         raise NotImplementedError()
 
     @abstractmethod
+    def get_time_from_nanos(self, nanos: int):
+        """
+        Returns the time value for a count of nanoseconds since the epoch.
+
+        This is how Project AirSim simulation timestamps, which are integer
+        nanoseconds, become ROS time values.
+
+        Arguments:
+            nanos - Nanoseconds since the epoch
+
+        Returns:
+            (Return) - Time value for the given nanoseconds
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
     def get_time_now(self):
         """
         Returns the current node time value.

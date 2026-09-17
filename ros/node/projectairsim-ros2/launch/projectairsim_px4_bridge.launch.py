@@ -31,6 +31,8 @@ def generate_launch_description():
         DeclareLaunchArgument("cmd_vel_timeout_sec", default_value="1.0"),
         DeclareLaunchArgument("takeoff_timeout_sec", default_value="20.0"),
         DeclareLaunchArgument("land_timeout_sec", default_value="60.0"),
+        DeclareLaunchArgument("interface_profile", default_value=""),
+        DeclareLaunchArgument("use_sim_time", default_value="false"),
         # MAVROS2 args
         DeclareLaunchArgument(
             "fcu_url",
@@ -54,6 +56,8 @@ def generate_launch_description():
             ("cmd_vel_timeout_sec", LaunchConfiguration("cmd_vel_timeout_sec")),
             ("takeoff_timeout_sec", LaunchConfiguration("takeoff_timeout_sec")),
             ("land_timeout_sec", LaunchConfiguration("land_timeout_sec")),
+            ("interface_profile", LaunchConfiguration("interface_profile")),
+            ("use_sim_time", LaunchConfiguration("use_sim_time")),
         ],
     )
 

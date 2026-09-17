@@ -2,7 +2,10 @@ from types import SimpleNamespace
 
 from geometry_msgs.msg import PoseStamped
 
+import pytest
+
 import projectairsim_rosbridge.ros_bridge as bridge_module
+from projectairsim_rosbridge.interface_profile import InterfaceProfile, ProfileError
 from projectairsim_rosbridge.ros_bridge import ProjectAirSimROSBridge
 
 
@@ -42,6 +45,7 @@ def make_bridge(topics):
     bridge.robot_control_handlers = {}
     bridge.robot_paths = {}
     bridge.topics_managers = object()
+    bridge.interface_profile = InterfaceProfile()
     bridge.ros_node = SimpleNamespace(supports_lifecycle_services=True)
     bridge.msg_converter = SimpleNamespace(set_robot_base_frame_ids=lambda value: None)
     bridge.cmd_vel_timeout_sec = 1.0
@@ -93,3 +97,22 @@ def test_scene_replacement_destroys_removed_robot_controls(monkeypatch):
     assert removed_handler.cleared
     assert set(bridge.robot_control_handlers) == {"/scene/robots/Drone2"}
     bridge.clear = lambda: None
+
+
+def test_a_half_built_bridge_can_be_torn_down_without_raising():
+    """
+    A failure inside __init__ still leaves Python to run the destructor.  If
+    teardown raised, the AttributeError would replace the real error in the
+    traceback.
+    """
+    bridge = ProjectAirSimROSBridge.__new__(ProjectAirSimROSBridge)
+
+    bridge.clear()
+    bridge.clear()
+
+
+def test_an_invalid_interface_profile_surfaces_as_a_profile_error():
+    with pytest.raises(ProfileError, match="cannot read interface profile"):
+        ProjectAirSimROSBridge(
+            ros_node=None, interface_profile="/nonexistent/profile.yaml"
+        )

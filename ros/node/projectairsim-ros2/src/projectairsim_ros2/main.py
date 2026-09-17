@@ -19,6 +19,8 @@ def _declare_parameters(ros_node: ROS2Node):
     node.declare_parameter("cmd_vel_timeout_sec", 1.0)
     node.declare_parameter("takeoff_timeout_sec", 20.0)
     node.declare_parameter("land_timeout_sec", 60.0)
+    node.declare_parameter("interface_profile", "")
+    # use_sim_time is declared by rclpy itself, so it is only read here.
 
 
 def _parameter(ros_node: ROS2Node, name: str):
@@ -46,6 +48,8 @@ def main(args: Optional[Sequence[str]] = None):
                 _parameter(ros_node, "takeoff_timeout_sec")
             ),
             land_timeout_sec=float(_parameter(ros_node, "land_timeout_sec")),
+            interface_profile=str(_parameter(ros_node, "interface_profile")),
+            use_sim_time=bool(_parameter(ros_node, "use_sim_time")),
         )
         projectairsim_log().info("Project AirSim ROS 2 bridge ready")
         ros_node.spin()

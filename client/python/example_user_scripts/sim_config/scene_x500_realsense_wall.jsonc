@@ -1,0 +1,61 @@
+{
+  // Wall scene for the X500 + RealSense vehicle under PX4 SITL.
+  //
+  // Equivalent to the Gazebo `wall` world used by the point-to-point planner
+  // scenarios: a ground plane and one wall between the vehicle and a goal
+  // roughly 12 m ahead, so a planner has to route around it.
+  //
+  // The Gazebo wall is a 0.2 m thick, 8 m wide, 6 m tall slab centred 6 m
+  // ahead of the spawn point. The box below is scaled to match.
+  "id": "SceneX500RealsenseWall",
+  "actors": [
+    {
+      "type": "robot",
+      "name": "Drone1",
+      "origin": {
+        "xyz": "0.0 0.0 -0.3",
+        "rpy-deg": "0 0 0"
+      },
+      "robot-config": "robot_x500_realsense_px4_sitl.jsonc"
+    }
+  ],
+  "spawn-objects": {
+    "sim-packaged": [
+      {
+        "name": "Wall",
+        // Blocks ships Unreal's rounded template cube as its generic box mesh.
+        // Confirm the exact name available in your environment with
+        //   world.list_assets(".*[Cc]ube.*")
+        // and change this one line if it differs.
+        "asset-path": "TemplateCube_Rounded",
+        // The template cube is a 100 cm cube, so the scale is the wall's size
+        // in metres: 0.2 m thick (X, forward), 8 m wide (Y), 6 m tall (Z).
+        "scale": "0.2 8.0 6.0",
+        "physics-enabled": false,
+        "origin": {
+          // 6 m ahead of the spawn point, centred vertically on its own
+          // height so that it sits on the ground. Z is down.
+          "xyz": "6.0 0.0 -3.0",
+          "rpy-deg": "0 0 0"
+        }
+      }
+    ]
+  },
+  "clock": {
+    "type": "steppable",
+    "step-ns": 3000000,
+    "real-time-update-rate": 3000000,
+    "pause-on-start": false
+  },
+  "home-geo-point": {
+    "latitude": 47.641468,
+    "longitude": -122.140165,
+    "altitude": 122.0
+  },
+  "segmentation": {
+    "initialize-ids": true,
+    "ignore-existing": false,
+    "use-owner-name": true
+  },
+  "scene-type": "UnrealNative"
+}

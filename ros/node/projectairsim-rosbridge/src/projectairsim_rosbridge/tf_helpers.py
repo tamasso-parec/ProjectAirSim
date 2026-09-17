@@ -114,9 +114,15 @@ class TFBroadcaster:
     # -------------------------------------------------------------------------
     # TFBroadcaster Methods
     # -------------------------------------------------------------------------
-    def __init__(self, ros_node: ROSNode, logger: logging = None):
+    def __init__(self, ros_node: ROSNode, logger: logging = None, sim_time=None):
         """
         Constructor.
+
+        Arguments:
+            ros_node - Project AirSim ROS node object
+            logger - Log message handler
+            sim_time - SimTimeSource used to stamp broadcast transforms; if
+                None, the ROS wall clock is used
         """
         self.frames = {}  # Frames to be broadcast, guarded by self.lock_frames
         self.broadcast_thread = threading.Thread(
@@ -135,6 +141,9 @@ class TFBroadcaster:
         self.logger = logger if logger is not None else projectairsim_log()
         self.rate = ros_node.create_rate(20)  # Transform broadcast rate
         self.ros_node = ros_node
+        # Transforms must share the simulator's clock, otherwise a consumer
+        # running with use_sim_time discards every transform we broadcast.
+        self.sim_time = sim_time
         self.static_transform_broadcaster = (
             ros_node.create_static_transform_broadcaster()
         )  # Static transform broadcaster
@@ -172,7 +181,7 @@ class TFBroadcaster:
                     frame_id,
                     frame_id_parent,
                     transform,
-                    self.ros_node.get_time_to_msg(self.ros_node.get_time_now()),
+                    self._now_msg(),
                 )
                 self.logger.info(f'Adding transform frame "{frame_id}"')
         self.event_notify.set()  # Let broadcast thread know the frame list is not empty
@@ -221,12 +230,12 @@ class TFBroadcaster:
             timevalue - The time of the update or the current ROS time if unspecified
         """
         if timevalue is None:
-            timevalue = self.ros_node.get_time_now()
+            timestamp = self._now_msg()
+        else:
+            timestamp = self.ros_node.get_time_to_msg(timevalue)
         with self.lock_frames:
             if frame_id in self.frames:
-                self.frames[frame_id].set_transform(
-                    transform, self.ros_node.get_time_to_msg(timevalue)
-                )
+                self.frames[frame_id].set_transform(transform, timestamp)
 
     def start(self):
         """
@@ -245,6 +254,15 @@ class TFBroadcaster:
         """
         self.logger.info("Transform broadcast disabled")
         self.event_run.clear()
+
+    def _now_msg(self):
+        """
+        Returns a message header timestamp for the current time, from the
+        simulation clock when one is configured.
+        """
+        if self.sim_time is not None:
+            return self.sim_time.now_msg()
+        return self.ros_node.get_time_now_msg()
 
     def _broadcast_thread_fn(self):
         """
@@ -269,7 +287,7 @@ class TFBroadcaster:
                     break  # We should quit
 
                 # Broadcast each frame
-                timestamp_cur = self.ros_node.get_time_now_msg()
+                timestamp_cur = self._now_msg()
                 with self.lock_frames:
                     for pair in self.frames.items():
                         frame = pair[1]

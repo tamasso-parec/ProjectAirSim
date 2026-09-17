@@ -15,7 +15,9 @@ import std_msgs.msg as rosstdmsg
 import numpy as np
 
 from . import utils
+from .interface_profile import DepthSettings
 from .node import ROSNode
+from .sim_time import SimTimeSource
 
 
 class MsgConverter:
@@ -37,19 +39,139 @@ class MsgConverter:
     # Initialized covariance matrix-as-array indicating no covariance data
     NO_COVARIANCE_MATRIX = [0.0] * 9
 
-    def __init__(self, ros_node: ROSNode):
+    # Raw 16UC1 value Project AirSim writes when a depth sample is beyond the
+    # representable range.  See ImagePackingAsyncTask.cpp, which saturates
+    # millimetre depth at UINT16_MAX.
+    DEPTH_SATURATED_MM = 65535
+
+    def __init__(
+        self,
+        ros_node: ROSNode,
+        sim_time: SimTimeSource = None,
+        coords: utils.CoordinateConverter = None,
+        depth: DepthSettings = None,
+    ):
         """
         Constructor.
 
         Arguments:
             ros_node - Project AirSim ROS node object
-            robot_base_frame_ids - Mapping from Project AirSim topic name to robot's base transform frame ID
+            sim_time - Simulation clock source used to stamp messages; if
+                None, messages are stamped from the ROS wall clock
+            coords - Coordinate converter; if None, the process-wide default
+                is used
+            depth - Depth image conversion settings; if None, defaults apply
         """
-        self.max_depth_mm = 6000  # Maximum depth value from 16UC1 image format, used to convert to [0, 255] monochrome image (millimeters)
         self.ros_node = ros_node  # ROS node
+        self.sim_time = (
+            sim_time if sim_time is not None else SimTimeSource(ros_node, enabled=False)
+        )
+        self.coords = (
+            coords if coords is not None else utils.get_default_coordinate_converter()
+        )
+        self.depth = depth if depth is not None else DepthSettings()
         self.robot_base_frame_ids = (
             {}
         )  # Mapping from Project AirSim topic name to robot's base transform frame ID
+
+    @property
+    def max_depth_mm(self) -> int:
+        """
+        Maximum depth in millimetres represented by the legacy mono8 depth
+        encoding, where it maps to a pixel value of 255.
+        """
+        return int(self.depth.mono8_max_range_m * 1000.0)
+
+    # -------------------------------------------------------------------------
+    # Coordinate conversion helpers
+    #
+    # These use this converter's own CoordinateConverter rather than the
+    # module-level default, so the configured frame convention applies even
+    # when several converters coexist (for instance in tests).
+    #
+    # World quantities follow the configured world convention; body-relative
+    # quantities always convert Project AirSim FRD to ROS FLU.
+    # -------------------------------------------------------------------------
+
+    def _world_point(self, projectairsim_vector) -> rosgeommsg.Point:
+        x, y, z = self.coords.world_vector(
+            (
+                projectairsim_vector["x"],
+                projectairsim_vector["y"],
+                projectairsim_vector["z"],
+            )
+        )
+        return rosgeommsg.Point(x=x, y=y, z=z)
+
+    def _world_vector3(self, projectairsim_vector) -> rosgeommsg.Vector3:
+        x, y, z = self.coords.world_vector(
+            (
+                projectairsim_vector["x"],
+                projectairsim_vector["y"],
+                projectairsim_vector["z"],
+            )
+        )
+        return rosgeommsg.Vector3(x=x, y=y, z=z)
+
+    def _world_position_list(self, projectairsim_vector):
+        return self.coords.world_vector(
+            (
+                projectairsim_vector["x"],
+                projectairsim_vector["y"],
+                projectairsim_vector["z"],
+            )
+        )
+
+    def _world_quaternion(self, projectairsim_quaternion) -> rosgeommsg.Quaternion:
+        w, x, y, z = self.coords.world_quaternion(
+            (
+                projectairsim_quaternion["w"],
+                projectairsim_quaternion["x"],
+                projectairsim_quaternion["y"],
+                projectairsim_quaternion["z"],
+            )
+        )
+        return rosgeommsg.Quaternion(x=x, y=y, z=z, w=w)
+
+    def _world_quaternion_list(self, projectairsim_quaternion):
+        w, x, y, z = self.coords.world_quaternion(
+            (
+                projectairsim_quaternion["w"],
+                projectairsim_quaternion["x"],
+                projectairsim_quaternion["y"],
+                projectairsim_quaternion["z"],
+            )
+        )
+        return (x, y, z, w)
+
+    def _body_vector3(self, projectairsim_vector) -> rosgeommsg.Vector3:
+        x, y, z = self.coords.body_vector(
+            (
+                projectairsim_vector["x"],
+                projectairsim_vector["y"],
+                projectairsim_vector["z"],
+            )
+        )
+        return rosgeommsg.Vector3(x=x, y=y, z=z)
+
+    def _body_vector_list(self, projectairsim_vector):
+        return self.coords.body_vector(
+            (
+                projectairsim_vector["x"],
+                projectairsim_vector["y"],
+                projectairsim_vector["z"],
+            )
+        )
+
+    def _to_projectairsim_world_position(self, ros_vector):
+        x, y, z = self.coords.world_vector((ros_vector.x, ros_vector.y, ros_vector.z))
+        return {"x": x, "y": y, "z": z}
+
+    def _to_projectairsim_world_quaternion(self, ros_quaternion):
+        w, x, y, z = self.coords.world_quaternion(
+            (ros_quaternion.w, ros_quaternion.x, ros_quaternion.y, ros_quaternion.z)
+        )
+        return {"x": x, "y": y, "z": z, "w": w}
 
     def convert_actual_pose_to_ros(self, projectairsim_topic_name, projectairsim_pose):
         """
@@ -63,11 +185,11 @@ class MsgConverter:
             (return) - Corresponding ROS Pose message
         """
         posestamped = rosgeommsg.PoseStamped()
-        posestamped.header.stamp = self.ros_node.get_time_now_msg()
+        posestamped.header.stamp = self.sim_time.stamp(projectairsim_pose)
         # posestamped.header.frame_id is set by PoseBridgeToROS
 
-        posestamped.pose.position = utils.to_ros_point(projectairsim_pose["position"])
-        posestamped.pose.orientation = utils.to_ros_quaternion(
+        posestamped.pose.position = self._world_point(projectairsim_pose["position"])
+        posestamped.pose.orientation = self._world_quaternion(
             projectairsim_pose["orientation"]
         )
 
@@ -85,7 +207,9 @@ class MsgConverter:
             (return) - Corresponding ROS FluidPressure message
         """
         fluid_pressure = rossensmsg.FluidPressure()
-        fluid_pressure.header = self._get_standard_ros_header(projectairsim_topic_name)
+        fluid_pressure.header = self._get_standard_ros_header(
+            projectairsim_topic_name, projectairsim_msg
+        )
 
         fluid_pressure.fluid_pressure = float(projectairsim_msg["pressure"])
         fluid_pressure.variance = 0.0
@@ -105,8 +229,10 @@ class MsgConverter:
             (return) - Corresponding Project AirSim Pose message
         """
         projectairsim_pose = {
-            "position": utils.to_projectairsim_position(ros_posestamped.pose.position),
-            "orientation": utils.to_projectairsim_quaternion(
+            "position": self._to_projectairsim_world_position(
+                ros_posestamped.pose.position
+            ),
+            "orientation": self._to_projectairsim_world_quaternion(
                 ros_posestamped.pose.orientation
             ),
         }
@@ -124,7 +250,9 @@ class MsgConverter:
             (return) - Corresponding ROS NavSatFix message
         """
         nav_sat_fix = rossensmsg.NavSatFix()
-        nav_sat_fix.header = self._get_standard_ros_header(projectairsim_topic_name)
+        nav_sat_fix.header = self._get_standard_ros_header(
+            projectairsim_topic_name, projectairsim_msg
+        )
 
         nav_sat_fix.status.status = (
             rossensmsg.NavSatStatus.STATUS_SBAS_FIX
@@ -179,7 +307,7 @@ class MsgConverter:
             (return) - Corresponding ROS Image message
         """
         image = rossensmsg.Image()
-        image.header.stamp = self.ros_node.get_time_now_msg()
+        image.header.stamp = self.sim_time.stamp(projectairsim_image_bgr8)
         # image.header.frame_id must be set by caller
 
         # Get image parameters
@@ -198,7 +326,23 @@ class MsgConverter:
         self, projectairsim_topic_name, projectairsim_image_16uc1
     ):
         """
-        Convert a Project AirSim 16uc1 image message into a ROS image message.
+        Convert a Project AirSim 16uc1 depth image message into a ROS image
+        message.
+
+        Project AirSim transmits depth as 16-bit unsigned millimetres,
+        saturating at DEPTH_SATURATED_MM.  Which ROS encoding this becomes is
+        controlled by the bridge's depth settings:
+
+            32FC1 (default) - metres as 32-bit float, the encoding the ROS
+                depth ecosystem expects.  Samples with no reading become NaN
+                and samples beyond the sensor range become +infinity, so that
+                consumers such as depth_image_proc and OctoMap skip them.
+            16UC1 - millimetres, unchanged from the wire format.  Samples
+                beyond the sensor range become 0, the 16UC1 "no reading"
+                value.
+            mono8 - the bridge's historical output, scaled so that the
+                configured mono8 range maps to 255.  Lossy; suitable only for
+                viewing.
 
         Arguments:
             projectairsim_topic_name - The Project AirSim topic name
@@ -208,26 +352,258 @@ class MsgConverter:
             (return) - Corresponding ROS Image message
         """
         image = rossensmsg.Image()
-        image.header.stamp = self.ros_node.get_time_now_msg()
+        image.header.stamp = self.sim_time.stamp(projectairsim_image_16uc1)
         # image.header.frame_id must be set by caller
 
         # Get image parameters
-        image.height = int(projectairsim_image_16uc1["height"])
-        image.width = int(projectairsim_image_16uc1["width"])
-        image.encoding = "mono8"
-        image.is_bigendian = int(projectairsim_image_16uc1["big_endian"])
+        height = int(projectairsim_image_16uc1["height"])
+        width = int(projectairsim_image_16uc1["width"])
+        image.height = height
+        image.width = width
 
-        # Convert image data to uncompressed bitmap data
-        nparray = np.frombuffer(projectairsim_image_16uc1["data"], dtype="uint16")
-        nparray = np.reshape(
-            nparray,
-            [projectairsim_image_16uc1["height"], projectairsim_image_16uc1["width"]],
+        # Respect the transmitted byte order when reading the raw samples, but
+        # always emit native little-endian values.
+        source_dtype = ">u2" if int(projectairsim_image_16uc1["big_endian"]) else "<u2"
+        depth_mm = np.frombuffer(
+            projectairsim_image_16uc1["data"], dtype=source_dtype
+        ).reshape(height, width)
+        image.is_bigendian = 0
+
+        encoding = self.depth.encoding
+        if encoding == DepthSettings.ENCODING_32FC1:
+            depth_m = self._depth_metres(depth_mm)
+            image.data = depth_m.tobytes()
+            image.encoding = "32FC1"
+            image.step = 4 * width
+            return image
+
+        if encoding == DepthSettings.ENCODING_MONO8:
+            scaled = depth_mm.astype("float32") * (255.0 / self.max_depth_mm)
+            image.data = np.clip(scaled, 0.0, 255.0).astype("uint8").tobytes()
+            image.encoding = "mono8"
+            image.step = width
+            return image
+
+        max_range_mm = (
+            self.depth.max_range_m * 1000.0 if self.depth.max_range_m > 0.0 else None
         )
-        nparray = ((nparray / self.max_depth_mm) * 255).astype("uint8")
-        image.data = nparray.tobytes()
-        image.step = image.width
 
+        # 16UC1 millimetres, as transmitted.
+        output = depth_mm.astype("<u2")
+        # 0 is the 16UC1 convention for "no reading", which is what both a
+        # saturated sample and an out-of-range sample amount to.
+        invalid = depth_mm >= self.DEPTH_SATURATED_MM
+        if max_range_mm is not None:
+            invalid = invalid | (depth_mm > max_range_mm)
+        if invalid.any():
+            output = np.where(invalid, np.uint16(0), output).astype("<u2")
+        image.data = output.tobytes()
+        image.encoding = "16UC1"
+        image.step = 2 * width
         return image
+
+    def _depth_metres(self, depth_mm):
+        """
+        Convert raw Project AirSim millimetre depth into metres.
+
+        Samples the renderer produced no reading for become NaN, and samples
+        beyond the sensor range become +infinity, following the ROS depth
+        conventions so that consumers skip them rather than treating them as
+        geometry.
+
+        Arguments:
+            depth_mm - Raw uint16 millimetre depth array
+
+        Returns:
+            (return) - float32 metre depth array, little-endian
+        """
+        depth_m = depth_mm.astype("<f4") * np.float32(0.001)
+        # A zero sample is physically impossible for a rendered depth buffer,
+        # so it means the renderer produced no reading.
+        depth_m = np.where(depth_mm == 0, np.float32("nan"), depth_m)
+
+        too_far = depth_mm >= self.DEPTH_SATURATED_MM
+        if self.depth.max_range_m > 0.0:
+            too_far = too_far | (depth_mm > self.depth.max_range_m * 1000.0)
+        depth_m = np.where(too_far, np.float32("inf"), depth_m)
+
+        return depth_m.astype("<f4")
+
+    def convert_depth_image_to_point_cloud(
+        self,
+        projectairsim_image_16uc1,
+        intrinsic_camera_matrix,
+        frame_id,
+        points_settings,
+    ):
+        """
+        Reproject a Project AirSim depth image into a ROS PointCloud2.
+
+        Project AirSim has no point-cloud sensor of its own for cameras, so
+        the cloud a depth-camera-based stack expects is produced here from the
+        depth image and the camera intrinsics.  Doing it in the bridge rather
+        than in a downstream depth_image_proc node avoids shipping the depth
+        image over DDS only to convert it, and gives the cloud the same
+        simulation timestamp and frame as the image it came from.
+
+        The cloud is organised (one point per pixel, row major) and not dense:
+        invalid pixels are NaN, exactly as a Gazebo depth camera publishes
+        them, so that a consumer can still index by pixel.
+
+        Arguments:
+            projectairsim_image_16uc1 - The depth image message from Project AirSim
+            intrinsic_camera_matrix - Row-major 3x3 camera matrix, as in
+                CameraInfo.k
+            frame_id - Transform frame the points are expressed in
+            points_settings - PointCloudSettings controlling axis convention
+                and decimation
+
+        Returns:
+            (return) - Corresponding ROS PointCloud2 message, or None when the
+                camera intrinsics are not known yet
+        """
+        fx = float(intrinsic_camera_matrix[0])
+        fy = float(intrinsic_camera_matrix[4])
+        cx = float(intrinsic_camera_matrix[2])
+        cy = float(intrinsic_camera_matrix[5])
+        if fx == 0.0 or fy == 0.0:
+            # Camera info has not arrived yet; without focal lengths every
+            # point would collapse onto the optical axis.
+            return None
+
+        height = int(projectairsim_image_16uc1["height"])
+        width = int(projectairsim_image_16uc1["width"])
+        source_dtype = ">u2" if int(projectairsim_image_16uc1["big_endian"]) else "<u2"
+        depth_mm = np.frombuffer(
+            projectairsim_image_16uc1["data"], dtype=source_dtype
+        ).reshape(height, width)
+
+        step = max(1, int(points_settings.decimation))
+        if step > 1:
+            depth_mm = depth_mm[::step, ::step]
+
+        depth_m = self._depth_metres(depth_mm)
+        rows, columns = depth_m.shape
+
+        # Pixel centres of the retained samples, in the full-resolution grid.
+        u = (np.arange(columns, dtype="<f4") * step - np.float32(cx)) / np.float32(fx)
+        v = (np.arange(rows, dtype="<f4") * step - np.float32(cy)) / np.float32(fy)
+
+        # An infinite reading has no position, so it joins the invalid samples
+        # as NaN rather than becoming a point at infinity.
+        valid_depth = np.where(np.isfinite(depth_m), depth_m, np.float32("nan"))
+
+        forward = valid_depth
+        right = valid_depth * u[np.newaxis, :]
+        down = valid_depth * v[:, np.newaxis]
+
+        cloud = np.empty((rows, columns, 3), dtype="<f4")
+        if points_settings.is_optical:
+            # Optical frame: X right, Y down, Z forward.
+            cloud[..., 0] = right
+            cloud[..., 1] = down
+            cloud[..., 2] = forward
+        else:
+            # Body frame: X forward, Y left, Z up.
+            cloud[..., 0] = forward
+            cloud[..., 1] = -right
+            cloud[..., 2] = -down
+
+        point_cloud = rossensmsg.PointCloud2()
+        point_cloud.header.stamp = self.sim_time.stamp(projectairsim_image_16uc1)
+        point_cloud.header.frame_id = frame_id
+        point_cloud.height = rows
+        point_cloud.width = columns
+        point_cloud.fields = [
+            rossensmsg.PointField(
+                name=name,
+                offset=offset,
+                datatype=rossensmsg.PointField.FLOAT32,
+                count=1,
+            )
+            for name, offset in (("x", 0), ("y", 4), ("z", 8))
+        ]
+        point_cloud.is_bigendian = False
+        point_cloud.point_step = 12
+        point_cloud.row_step = 12 * columns
+        point_cloud.data = cloud.tobytes()
+        # Invalid pixels are retained as NaN to keep the cloud organised.
+        point_cloud.is_dense = False
+
+        return point_cloud
+
+    def convert_collision_info_to_gz_contacts(
+        self, projectairsim_topic_name, projectairsim_msg
+    ):
+        """
+        Convert a Project AirSim collision report into a ros_gz_interfaces
+        Contacts message.
+
+        Project AirSim reports one collision at a time, so the Contacts
+        message carries a single contact.  ros_gz_interfaces is imported
+        lazily by the caller and passed in, keeping it an optional dependency.
+
+        Arguments:
+            projectairsim_topic_name - The Project AirSim topic name
+            projectairsim_msg - The collision info received from the topic
+
+        Returns:
+            (return) - Corresponding ros_gz_interfaces/Contacts message, or
+                None when the message reports no collision
+        """
+        gz_msgs = self._gz_interfaces_msgs()
+
+        contacts = gz_msgs.Contacts()
+        contacts.header = self._get_standard_ros_header(
+            projectairsim_topic_name, projectairsim_msg
+        )
+
+        # Project AirSim republishes the last collision with an empty object
+        # name when nothing is touching; a contact-free Contacts message is
+        # what a Gazebo consumer expects in that case.
+        object_name = projectairsim_msg.get("object_name") or ""
+        if not object_name:
+            return contacts
+
+        contact = gz_msgs.Contact()
+        # Gazebo names both sides of a contact.  Project AirSim only knows the
+        # object the robot hit, so the robot's own frame stands in for the
+        # other side.
+        contact.collision1.name = self.robot_base_frame_ids.get(
+            projectairsim_topic_name, ""
+        )
+        contact.collision2.name = str(object_name)
+
+        # Contact.positions and .normals are Vector3 sequences, not Point.
+        contact.positions = [
+            self._world_vector3(projectairsim_msg["impact_point"])
+        ]
+        contact.normals = [self._world_vector3(projectairsim_msg["normal"])]
+        contact.depths = [float(projectairsim_msg.get("penetration_depth", 0.0))]
+
+        contacts.contacts = [contact]
+
+        return contacts
+
+    @staticmethod
+    def _gz_interfaces_msgs():
+        """
+        Import ros_gz_interfaces on demand.
+
+        Collision reporting is the only feature that needs it, and it is off
+        by default, so the package stays an optional dependency rather than
+        one every Project AirSim bridge user has to install.
+        """
+        try:
+            import ros_gz_interfaces.msg as gz_msgs
+        except ImportError as exc:
+            raise ImportError(
+                "collision.message 'gz_contacts' needs the ros_gz_interfaces "
+                "package, which is not installed. Install it with "
+                "'sudo apt install ros-$ROS_DISTRO-ros-gz-interfaces', or set "
+                "collision.message to 'none' in the interface profile."
+            ) from exc
+        return gz_msgs
 
     def convert_imu_to_ros(self, projectairsim_topic_name, projectairsim_msg):
         """
@@ -241,15 +617,17 @@ class MsgConverter:
             (return) - Corresponding ROS Imu message
         """
         imu = rossensmsg.Imu()
-        imu.header = self._get_standard_ros_header(projectairsim_topic_name)
+        imu.header = self._get_standard_ros_header(
+            projectairsim_topic_name, projectairsim_msg
+        )
 
-        imu.orientation = utils.to_ros_quaternion(projectairsim_msg["orientation"])
+        imu.orientation = self._world_quaternion(projectairsim_msg["orientation"])
         imu.orientation_covariance = self.NO_COVARIANCE_MATRIX
-        imu.angular_velocity = utils.to_ros_position_vector3(
+        imu.angular_velocity = self._body_vector3(
             projectairsim_msg["angular_velocity"]
         )
         imu.angular_velocity_covariance = self.NO_COVARIANCE_MATRIX
-        imu.linear_acceleration = utils.to_ros_position_vector3(
+        imu.linear_acceleration = self._body_vector3(
             projectairsim_msg["linear_acceleration"]
         )
         imu.linear_acceleration_covariance = self.NO_COVARIANCE_MATRIX
@@ -269,20 +647,18 @@ class MsgConverter:
         """
         point_cloud_airsim = projectairsim_lidar["point_cloud"]
 
-        # Convert data stream into array of 3D points
-        # Convert from Project AirSim's RHS Z-down to ROS's RHS Z-up
+        # Convert data stream into array of 3D points.  The points are
+        # relative to the sensor, so this is the body FRD-to-FLU conversion
+        # and is independent of the configured world convention.
+        body_vector = self.coords.body_vector
         points = [
-            (
-                float(point_cloud_airsim[i]),
-                -float(point_cloud_airsim[i + 1]),
-                -float(point_cloud_airsim[i + 2]),
-            )
+            body_vector(point_cloud_airsim[i : i + 3])
             for i in range(0, len(point_cloud_airsim), 3)
         ]
 
         # Create PointCloud2 message from 3D point array
         header = rosstdmsg.Header()
-        header.stamp = self.ros_node.get_time_now_msg()
+        header.stamp = self.sim_time.stamp(projectairsim_lidar)
         header.frame_id = projectairsim_lidar["frame_id"]
         pointcloud2 = self.ros_node.PointCloud2.create_cloud_xyz32(header, points)
 
@@ -308,13 +684,13 @@ class MsgConverter:
             transform.translation.x,
             transform.translation.y,
             transform.translation.z,
-        ) = utils.to_ros_position_list(projectairsim_pose["position"])
+        ) = self._world_position_list(projectairsim_pose["position"])
         (
             transform.rotation.x,
             transform.rotation.y,
             transform.rotation.z,
             transform.rotation.w,
-        ) = utils.to_ros_quaternion_list(projectairsim_pose["orientation"])
+        ) = self._world_quaternion_list(projectairsim_pose["orientation"])
 
         return transform
 
@@ -330,9 +706,11 @@ class MsgConverter:
             (return) - Corresponding ROS MagneticField message
         """
         magnetic_field = rossensmsg.MagneticField()
-        magnetic_field.header = self._get_standard_ros_header(projectairsim_topic_name)
+        magnetic_field.header = self._get_standard_ros_header(
+            projectairsim_topic_name, projectairsim_msg
+        )
 
-        magnetic_field.magnetic_field = utils.to_ros_position_vector3(
+        magnetic_field.magnetic_field = self._body_vector3(
             projectairsim_msg["magnetic_field_body"]
         )
 
@@ -360,7 +738,9 @@ class MsgConverter:
             (return) - Corresponding ROS RadarScan message
         """
         radarscan = rosradarmsg.RadarScan()
-        radarscan.header = self._get_standard_ros_header(projectairsim_topic_name)
+        radarscan.header = self._get_standard_ros_header(
+            projectairsim_topic_name, projectairsim_radar_detections
+        )
 
         radar_returns = radarscan.returns
         rdProjectAirSim = projectairsim_radar_detections["radar_detections"]
@@ -411,7 +791,9 @@ class MsgConverter:
             (return) - Corresponding ROS RadarTracks message
         """
         radartracks = rosradarmsg.RadarTracks()
-        radartracks.header = self._get_standard_ros_header(projectairsim_topic_name)
+        radartracks.header = self._get_standard_ros_header(
+            projectairsim_topic_name, projectairsim_radar_track
+        )
 
         tracks = radartracks.tracks
         rdProjectAirSim = projectairsim_radar_track["radar_tracks"]
@@ -424,17 +806,17 @@ class MsgConverter:
                 radartrack.position.x,
                 radartrack.position.y,
                 radartrack.position.z,
-            ) = utils.to_ros_position_list(radar_track["position_est"])
+            ) = self._body_vector_list(radar_track["position_est"])
             (
                 radartrack.velocity.x,
                 radartrack.velocity.y,
                 radartrack.velocity.z,
-            ) = utils.to_ros_position_list(radar_track["velocity_est"])
+            ) = self._body_vector_list(radar_track["velocity_est"])
             (
                 radartrack.acceleration.x,
                 radartrack.acceleration.y,
                 radartrack.acceleration.z,
-            ) = utils.to_ros_position_list(radar_track["accel_est"])
+            ) = self._body_vector_list(radar_track["accel_est"])
 
             tracks.append(radartrack)
 
@@ -449,13 +831,21 @@ class MsgConverter:
         """
         self.robot_base_frame_ids = robot_base_frame_ids
 
-    def _get_standard_ros_header(self, projectairsim_topic_name: str):
+    def _get_standard_ros_header(
+        self, projectairsim_topic_name: str, projectairsim_msg=None
+    ):
         """
-        Returns a ROS header with the current ROS node's timestamp and the
-        frame ID set to the corresponding robot base's transform frame ID
+        Returns a ROS header stamped from the Project AirSim message's own
+        simulation timestamp, with the frame ID set to the corresponding robot
+        base's transform frame ID.
+
+        Arguments:
+            projectairsim_topic_name - The Project AirSim topic name
+            projectairsim_msg - The Project AirSim topic message, whose
+                time_stamp field provides the header timestamp
         """
         header = rosstdmsg.Header()
-        header.stamp = self.ros_node.get_time_now_msg()
+        header.stamp = self.sim_time.stamp(projectairsim_msg)
         header.frame_id = self.robot_base_frame_ids[
             projectairsim_topic_name
         ]

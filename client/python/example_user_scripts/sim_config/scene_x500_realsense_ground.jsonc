@@ -1,0 +1,47 @@
+{
+  // Open-ground scene for the X500 + RealSense vehicle under PX4 SITL.
+  //
+  // Equivalent to the Gazebo `x500_realsense` world: a ground plane and
+  // nothing else, for bring-up and for checking sensor and clock behaviour
+  // before introducing obstacles. Use scene_x500_realsense_wall.jsonc for the
+  // obstacle scenario.
+  "id": "SceneX500RealsenseGround",
+  "actors": [
+    {
+      "type": "robot",
+      "name": "Drone1",
+      "origin": {
+        // 0.3 m above the ground, matching the Gazebo spawn height. Z is down
+        // in this frame, so the value is negative.
+        "xyz": "0.0 0.0 -0.3",
+        "rpy-deg": "0 0 0"
+      },
+      "robot-config": "robot_x500_realsense_px4_sitl.jsonc"
+    }
+  ],
+  "clock": {
+    // A steppable clock is what makes PX4 lock-step work: simulation time
+    // advances with each sensor update sent to PX4 rather than with wall time,
+    // so a slow render stretches time instead of dropping data.
+    //
+    // 3 ms per step is 333 Hz, comfortably above the 250 Hz PX4 expects for
+    // HIL_SENSOR (IMU_INTEG_RATE).
+    "type": "steppable",
+    "step-ns": 3000000,
+    "real-time-update-rate": 3000000,
+    "pause-on-start": false
+  },
+  "home-geo-point": {
+    // Must agree with LPE_LAT/LPE_LON in the robot config, or PX4 sets its
+    // home position somewhere other than the vehicle.
+    "latitude": 47.641468,
+    "longitude": -122.140165,
+    "altitude": 122.0
+  },
+  "segmentation": {
+    "initialize-ids": true,
+    "ignore-existing": false,
+    "use-owner-name": true
+  },
+  "scene-type": "UnrealNative"
+}

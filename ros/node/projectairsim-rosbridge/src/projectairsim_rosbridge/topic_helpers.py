@@ -14,14 +14,41 @@ import traceback
 import geometry_msgs.msg as rosgeommsg
 import sensor_msgs.msg as rossensmsg
 import std_srvs.srv as rosstdsrv
+import tf2_msgs.msg as rostf2msg
 
 from . import utils
 from .node import ROSNode
+from .sim_time import SimTimeSource
 from .tf_helpers import TFBroadcaster
 
 import projectairsim.types
 import projectairsim
 from projectairsim import ProjectAirSimClient
+
+
+# --------------------------------------------------------------------------
+# Shaping helpers for the CoordinateConverter's tuple results.  The converter
+# works in (x, y, z) and (w, x, y, z) order; ROS transforms want (x, y, z, w)
+# and Project AirSim messages want dictionaries.
+# --------------------------------------------------------------------------
+
+
+def _xyzw(quaternion_wxyz):
+    """Reorder a (w, x, y, z) tuple into ROS's (x, y, z, w) order."""
+    w, x, y, z = quaternion_wxyz
+    return (x, y, z, w)
+
+
+def _projectairsim_xyz(vector):
+    """Shape an (x, y, z) tuple as a Project AirSim vector message."""
+    x, y, z = vector
+    return {"x": x, "y": y, "z": z}
+
+
+def _projectairsim_wxyz(quaternion_wxyz):
+    """Shape a (w, x, y, z) tuple as a Project AirSim quaternion message."""
+    w, x, y, z = quaternion_wxyz
+    return {"x": x, "y": y, "z": z, "w": w}
 
 
 # --------------------------------------------------------------------------
@@ -483,17 +510,38 @@ class TopicsManagers:
         projectairsim_client: ProjectAirSimClient,
         ros_node: ROSNode,
         logger: logging.Logger,
+        sim_time=None,
+        coords=None,
     ):
         """
         Constructor.
+
+        Arguments:
+            projectairsim_client - Project AirSim client object
+            ros_node - Project AirSim ROS node object
+            logger - Log message handler
+            sim_time - SimTimeSource shared by every topic handler; if None, a
+                disabled source is created and the ROS wall clock is used
+            coords - CoordinateConverter shared by every topic handler; if
+                None, the process-wide default is used
         """
         self.logger = logger
         self.projectairsim_topics_manager = ProjectAirSimTopicsManager(
             projectairsim_client, logger
         )
         self.ros_node = ros_node
+        self.sim_time = (
+            sim_time
+            if sim_time is not None
+            else SimTimeSource(ros_node, enabled=False)
+        )
+        self.coords = (
+            coords
+            if coords is not None
+            else utils.get_default_coordinate_converter()
+        )
         self.ros_topics_manager = ROSTopicsManager(ros_node, logger)
-        self.tf_broadcaster = TFBroadcaster(ros_node, logger)
+        self.tf_broadcaster = TFBroadcaster(ros_node, logger, self.sim_time)
         self._request_lock = threading.RLock()
         self._async_loop = None
         self._async_loop_thread = None
@@ -629,6 +677,9 @@ class AutoSubscriber:
         self.is_subscribed = (
             False  # Whether we're currenly subscribed to the Project AirSim topic
         )
+        self.peer_counts = (
+            {}
+        )  # Subscriber count per ROS topic fed by this Project AirSim topic
         self.projectairsim_topic_name = (
             projectairsim_topic_name  # Name of the Project AirSim topic
         )
@@ -651,15 +702,21 @@ class AutoSubscriber:
         """
         if self.is_subscribed:
             self.unsubscribe()
+        self.peer_counts = {}
         self.projectairsim_topic_callback = None
         self.projectairsim_topics_manager = None
 
     def peer_change_cb(self, ros_topic_name: str, num_peers: int):
         """
-        Handles a change to the number of subscribers to the ROS topic.
+        Handles a change to the number of subscribers to a ROS topic.
 
-        We subscribe to the Project AirSim topic when have someone subscribing
-        to the ROS topic and unsubscribe when we don't.
+        We subscribe to the Project AirSim topic when someone is subscribing
+        to any of the ROS topics it feeds, and unsubscribe when none are.
+
+        One Project AirSim topic can feed several ROS topics: a depth camera
+        message becomes both a depth image and a point cloud.  Peer counts are
+        therefore tracked per ROS topic, so that losing the last subscriber to
+        one of them does not cut off the others.
 
         Typically the caller passes this method to ROSTopicManager.add_publisher()
         as the peer_change_callback argument.  If needed, the caller may
@@ -670,12 +727,13 @@ class AutoSubscriber:
             ros_topic_name - Name of the ROS topic
             num_peers - New number of subscribers to the ROS topic
         """
-        if num_peers == 0:
-            if self.is_subscribed:
-                self.unsubscribe()
-        else:
+        self.peer_counts[ros_topic_name] = num_peers
+
+        if any(count > 0 for count in self.peer_counts.values()):
             if not self.is_subscribed:
                 self.subscribe()
+        elif self.is_subscribed:
+            self.unsubscribe()
 
     def subscribe(self):
         self.projectairsim_topics_manager.add_subscriber(
@@ -987,6 +1045,7 @@ class SensorBridgeToROS(BasicBridgeToROS):
         ros_topic_is_latching: bool = False,
         frame_id: str = None,
         frame_id_parent: str = "map",
+        publish_tf: bool = True,
     ):
         """
         Constructor.
@@ -1012,6 +1071,10 @@ class SensorBridgeToROS(BasicBridgeToROS):
             frame_id - The name of the transform frame to broadcast; if None,
                 the robot name is used, derived from the Project AirSim topic name
             frame_id_parent - The name of the parent frame
+            publish_tf - If false, the sensor's transform frame is not
+                broadcast.  A ROS transform frame can have only one parent, so
+                a stack that publishes this frame itself must be able to stop
+                the bridge from claiming it.
         """
         if not callable(message_callback):
             raise TypeError(f"message_callback is not callable: {message_callback}")
@@ -1032,10 +1095,14 @@ class SensorBridgeToROS(BasicBridgeToROS):
         else:
             self.frame_id = utils.get_sensor_frame_id(projectairsim_topic_name)
         self.frame_id_parent = frame_id_parent
+        self.publish_tf = bool(publish_tf)
         self.transform = (
             rosgeommsg.Transform()
         )  # Cache of sensor's last known transform for ROS
-        topics_managers.tf_broadcaster.add_frame(self.frame_id, self.frame_id_parent)
+        if self.publish_tf:
+            topics_managers.tf_broadcaster.add_frame(
+                self.frame_id, self.frame_id_parent
+            )
 
         # Initialize the super class with the sensor topic
         super().__init__(
@@ -1054,7 +1121,8 @@ class SensorBridgeToROS(BasicBridgeToROS):
         super().clear()
 
         if self.frame_id is not None:
-            self.topics_managers.tf_broadcaster.remove_frame(self.frame_id)
+            if self.publish_tf:
+                self.topics_managers.tf_broadcaster.remove_frame(self.frame_id)
             self.frame_id = None
 
     def _projectairsim_topic_update_cb(
@@ -1083,9 +1151,10 @@ class SensorBridgeToROS(BasicBridgeToROS):
             # Publish the sensor transform frame
             if ros_transform is not None:
                 self.transform = ros_transform
-                self.topics_managers.tf_broadcaster.set_frame(
-                    self.frame_id, ros_transform
-                )
+                if self.publish_tf:
+                    self.topics_managers.tf_broadcaster.set_frame(
+                        self.frame_id, ros_transform
+                    )
 
             # Generate the ROS topic message
             ros_sensor_message = self.message_callback(
@@ -1306,6 +1375,12 @@ class CameraBridgeToROS(BasicBridgeToROS):
         ros_topic_is_latching: bool = False,
         frame_id: str = None,
         frame_id_parent: str = "map",
+        publish_tf: bool = True,
+        ros_topic_name_image: str = None,
+        ros_topic_name_camera_info: str = None,
+        ros_topic_name_points: str = None,
+        points_settings=None,
+        points_message_callback=None,
     ):
         """
         Constructor.
@@ -1332,6 +1407,21 @@ class CameraBridgeToROS(BasicBridgeToROS):
             frame_id - The name of the transform frame to broadcast; if None,
                 the robot name is used, derived from the Project AirSim topic name
             frame_id_parent - The name of the parent frame
+            publish_tf - If false, the camera's transform frame is not
+                broadcast, leaving the frame to whoever else publishes it
+            ros_topic_name_image - Name of the ROS image topic; if None,
+                "/image" is appended to the Project AirSim topic name
+            ros_topic_name_camera_info - Name of the ROS camera info topic; if
+                None, "/camera_info" is appended to the Project AirSim topic
+                name
+            ros_topic_name_points - Name of a ROS PointCloud2 topic to
+                reproject depth images onto; None publishes no point cloud.
+                Only meaningful for a depth image type.
+            points_settings - PointCloudSettings controlling the point cloud's
+                axis convention and decimation
+            points_message_callback - Callback converting a depth image message
+                into a ROS PointCloud2; required when ros_topic_name_points is
+                given
         """
         if not callable(image_message_callback):
             raise TypeError(
@@ -1351,7 +1441,9 @@ class CameraBridgeToROS(BasicBridgeToROS):
         self.sensor_helper = topics_managers.ros_node.create_sensor_helper()
 
         self.ros_topic_name_camera_image = (
-            projectairsim_topic_name + "/image"
+            ros_topic_name_image
+            if ros_topic_name_image
+            else projectairsim_topic_name + "/image"
         )  # ROS topic name for camera image
 
         # Setup the camera transform frame
@@ -1362,10 +1454,14 @@ class CameraBridgeToROS(BasicBridgeToROS):
         else:
             self.frame_id = utils.get_sensor_frame_id(projectairsim_topic_name)
         self.frame_id_parent = frame_id_parent
+        self.publish_tf = bool(publish_tf)
         self.transform = (
             rosgeommsg.Transform()
         )  # Cache of camera's last known transform for ROS
-        topics_managers.tf_broadcaster.add_frame(self.frame_id, self.frame_id_parent)
+        if self.publish_tf:
+            topics_managers.tf_broadcaster.add_frame(
+                self.frame_id, self.frame_id_parent
+            )
 
         # Initialize the super class with the image topic
         super().__init__(
@@ -1379,7 +1475,9 @@ class CameraBridgeToROS(BasicBridgeToROS):
 
         # Setup the camera info topic info
         self.ros_topic_name_camera_info = (
-            projectairsim_topic_name + "/camera_info"
+            ros_topic_name_camera_info
+            if ros_topic_name_camera_info
+            else projectairsim_topic_name + "/camera_info"
         )  # ROS topic name for camera info
         self.camera_info = (
             rossensmsg.CameraInfo()
@@ -1398,6 +1496,27 @@ class CameraBridgeToROS(BasicBridgeToROS):
             True,
         )
 
+        # Setup the optional point cloud topic
+        self.ros_topic_name_points = ros_topic_name_points
+        self.points_settings = points_settings
+        self.points_message_callback = points_message_callback
+        if self.ros_topic_name_points:
+            if not callable(points_message_callback):
+                raise TypeError(
+                    "points_message_callback is required when "
+                    f"ros_topic_name_points is set: {points_message_callback}"
+                )
+            topics_managers.ros_topics_manager.add_publisher(
+                topic_name=self.ros_topic_name_points,
+                ros_message_type=rossensmsg.PointCloud2,
+                peer_change_callback=self._auto_subscriber.peer_change_cb,
+                is_latching=False,
+                qos_profile="sensor_data",
+            )
+            # Reprojection needs the camera intrinsics, so the camera info
+            # subscription can no longer wait for a ROS subscriber of its own.
+            self.auto_subscriber_camera_info.subscribe()
+
         # Subscribe to ROS camera desired pose topic
         self._camera_path = utils.get_sensor_path(projectairsim_topic_name)
         self._desired_pose_bridge_from_ros.add_camera(
@@ -1407,19 +1526,37 @@ class CameraBridgeToROS(BasicBridgeToROS):
     def clear(self):
         """
         Stop handling messages and free resources.
+
+        The constructor can fail part-way through, for instance on a missing
+        point cloud callback, and Python still calls the destructor on the
+        half-built object.  Attributes are therefore read defensively so that
+        tearing down cannot raise an AttributeError that masks the original
+        failure.
         """
+        if not hasattr(self, "topics_managers"):
+            return
+
+        # Drop the point cloud publisher before the base class runs: it
+        # releases the auto-subscriber whose callback registered this topic.
+        if getattr(self, "ros_topic_name_points", None):
+            self.topics_managers.ros_topics_manager.remove_publisher(
+                self.ros_topic_name_points, self._auto_subscriber.peer_change_cb
+            )
+            self.ros_topic_name_points = None
+
         super().clear()
 
-        if self.frame_id is not None:
-            self.topics_managers.tf_broadcaster.remove_frame(self.frame_id)
+        if getattr(self, "frame_id", None) is not None:
+            if self.publish_tf:
+                self.topics_managers.tf_broadcaster.remove_frame(self.frame_id)
             self.frame_id = None
 
         # Stop subscribing to Project AirSim topic first
-        if self.auto_subscriber_camera_info is not None:
+        if getattr(self, "auto_subscriber_camera_info", None) is not None:
             self.auto_subscriber_camera_info.unsubscribe()
 
         # Stop subscribing to the camera's "desired_pose" topic
-        if self._camera_path is not None:
+        if getattr(self, "_camera_path", None) is not None:
             self._desired_pose_bridge_from_ros.remove_camera(self._camera_path)
             self._camera_path = None
 
@@ -1458,7 +1595,7 @@ class CameraBridgeToROS(BasicBridgeToROS):
                 self.transform.translation.x,
                 self.transform.translation.y,
                 self.transform.translation.z,
-            ) = utils.to_ros_position_list2list(
+            ) = self.topics_managers.coords.world_vector(
                 (
                     projectairsim_message_data["pos_x"],
                     projectairsim_message_data["pos_y"],
@@ -1471,15 +1608,20 @@ class CameraBridgeToROS(BasicBridgeToROS):
                 self.transform.rotation.y,
                 self.transform.rotation.z,
                 self.transform.rotation.w,
-            ) = utils.to_ros_quaternion_list2list(
-                (
-                    projectairsim_message_data["rot_x"],
-                    projectairsim_message_data["rot_y"],
-                    projectairsim_message_data["rot_z"],
-                    projectairsim_message_data["rot_w"],
+            ) = _xyzw(
+                self.topics_managers.coords.world_quaternion(
+                    (
+                        projectairsim_message_data["rot_w"],
+                        projectairsim_message_data["rot_x"],
+                        projectairsim_message_data["rot_y"],
+                        projectairsim_message_data["rot_z"],
+                    )
                 )
             )
-            self.topics_managers.tf_broadcaster.set_frame(self.frame_id, self.transform)
+            if self.publish_tf:
+                self.topics_managers.tf_broadcaster.set_frame(
+                    self.frame_id, self.transform
+                )
 
             self.topics_managers.ros_topics_manager.publish(
                 self.ros_topic_name_camera_image, ros_image
@@ -1493,6 +1635,35 @@ class CameraBridgeToROS(BasicBridgeToROS):
                 self.topics_managers.ros_topics_manager.publish(
                     self.ros_topic_name_camera_info, self.camera_info
                 )
+
+            self._publish_point_cloud(projectairsim_message_data)
+
+    def _publish_point_cloud(self, projectairsim_message_data):
+        """
+        Reproject the depth image into a point cloud, if one was requested and
+        anyone is listening.
+
+        Reprojection costs real work per frame, so it is skipped entirely
+        while the point cloud topic has no subscribers.
+
+        Arguments:
+            projectairsim_message_data - Message published to the Project AirSim topic
+        """
+        if not self.ros_topic_name_points:
+            return
+        if not self._auto_subscriber.peer_counts.get(self.ros_topic_name_points):
+            return
+
+        point_cloud = self.points_message_callback(
+            projectairsim_message_data,
+            self.camera_info.k,
+            self.frame_id,
+            self.points_settings,
+        )
+        if point_cloud is not None:
+            self.topics_managers.ros_topics_manager.publish(
+                self.ros_topic_name_points, point_cloud
+            )
 
     def _projectairsim_topic_update_camera_info_cb(
         self, projectairsim_topic, projectairsim_message_data
@@ -1527,7 +1698,11 @@ class CameraBridgeToROS(BasicBridgeToROS):
             projectairsim_topic - Project AirSim topic info
             projectairsim_camera_info - Project AirSim camera info topic message
         """
-        self.camera_info.header.stamp = self.topics_managers.ros_node.get_time_now_msg()
+        # Camera info carries no timestamp of its own, so it is stamped with
+        # the current simulation time.  When an image subscriber exists the
+        # image's own stamp is copied over this one before publishing, so that
+        # image and camera info always agree.
+        self.camera_info.header.stamp = self.topics_managers.sim_time.now_msg()
         self.camera_info.header.frame_id = self.frame_id
 
         self.camera_info.width = int(projectairsim_camera_info["width"])
@@ -1637,17 +1812,41 @@ class RobotControlHandler:
             (return) - Corresponding Project AirSim Pose object
         """
         projectairsim_pose = {
-            "position": utils.to_projectairsim_position(ros_posestamped.pose.position),
-            "orientation": utils.to_projectairsim_quaternion(
-                ros_posestamped.pose.orientation
+            "position": _projectairsim_xyz(
+                self.topics_managers.coords.world_vector(
+                    (
+                        ros_posestamped.pose.position.x,
+                        ros_posestamped.pose.position.y,
+                        ros_posestamped.pose.position.z,
+                    )
+                )
+            ),
+            "orientation": _projectairsim_wxyz(
+                self.topics_managers.coords.world_quaternion(
+                    (
+                        ros_posestamped.pose.orientation.w,
+                        ros_posestamped.pose.orientation.x,
+                        ros_posestamped.pose.orientation.y,
+                        ros_posestamped.pose.orientation.z,
+                    )
+                )
             ),
         }
         return projectairsim_pose
 
     def handle_ros_cmd_vel(self, ros_topic_name: str, ros_twist: rosgeommsg.Twist):
-        projectairsim_velocity = utils.to_projectairsim_position(ros_twist.linear)
-        projectairsim_angular_rotation = utils.to_projectairsim_angular_rotation(
-            ros_twist.angular
+        # MoveByVelocity takes a world-frame NED velocity and a yaw rate about
+        # the NED down axis.
+        coords = self.topics_managers.coords
+        projectairsim_velocity = _projectairsim_xyz(
+            coords.world_vector(
+                (ros_twist.linear.x, ros_twist.linear.y, ros_twist.linear.z)
+            )
+        )
+        projectairsim_angular_rotation = _projectairsim_xyz(
+            coords.world_vector(
+                (ros_twist.angular.x, ros_twist.angular.y, ros_twist.angular.z)
+            )
         )
 
         # Call MoveByVelocity service method directly so we don't need World and Drone objects
@@ -1768,6 +1967,9 @@ class RobotPoseBridgeToROS(BasicBridgeToROS):
         frame_id_parent: str,
         ros_topic_is_latching: bool = True,
         frame_id: str = None,
+        publish_tf: bool = True,
+        ros_topic_name: str = None,
+        ground_truth_tf_topic: str = None,
     ):
         """
         Constructor.
@@ -1784,6 +1986,17 @@ class RobotPoseBridgeToROS(BasicBridgeToROS):
             frame_id - The name of the transform frame to broadcast; if None,
                 the robot name is used, derived from the Project AirSim topic name
             frame_id_parent - The name of the parent frame
+            publish_tf - If false, the robot's transform frame is not
+                broadcast.  Stacks with their own state estimator, such as a
+                PX4 or SLAM pipeline, own this frame themselves and a second
+                publisher would corrupt the transform tree.
+            ros_topic_name - Name of the ROS topic if different from
+                projectairsim_topic_name
+            ground_truth_tf_topic - Name of a ROS topic to publish the pose on
+                as a TFMessage; None publishes none.  This carries simulator
+                ground truth off the standard /tf topic, so that evaluation
+                code can consume it without a second publisher corrupting the
+                transform tree.
         """
         super().__init__(
             projectairsim_topic_name=projectairsim_topic_name,
@@ -1791,9 +2004,12 @@ class RobotPoseBridgeToROS(BasicBridgeToROS):
             topics_managers=topics_managers,
             message_callback=message_callback,
             ros_topic_is_latching=ros_topic_is_latching,
+            ros_topic_name=ros_topic_name,
         )
         self.is_subscribed_to_projectairsim_topic = False
         self.frame_id_parent = frame_id_parent
+        self.publish_tf = bool(publish_tf)
+        self.ground_truth_tf_topic = ground_truth_tf_topic
         self.transform = rosgeommsg.Transform()
 
         # Get ID of transform frame corresponding to the pose and add the frame to the broadcaster
@@ -1809,9 +2025,25 @@ class RobotPoseBridgeToROS(BasicBridgeToROS):
                 )
 
         # Add the transform frame
-        topics_managers.tf_broadcaster.add_frame(self.frame_id, self.frame_id_parent)
+        if self.publish_tf:
+            topics_managers.tf_broadcaster.add_frame(
+                self.frame_id, self.frame_id_parent
+            )
 
-        # Subscribe to Project AirSim topic now since we need to constantly update the transform frame
+        # Advertise the ground truth transform topic
+        if self.ground_truth_tf_topic:
+            topics_managers.ros_topics_manager.add_publisher(
+                topic_name=self.ground_truth_tf_topic,
+                ros_message_type=rostf2msg.TFMessage,
+                peer_change_callback=self._ros_topic_peer_change_cb,
+                is_latching=False,
+                qos_profile="sensor_data",
+            )
+
+        # Subscribe to the Project AirSim topic now.  The robot pose is the
+        # bridge's most reliable high-rate source of simulation time, and the
+        # transform frame has to be updated continuously, so this subscription
+        # does not wait for a ROS subscriber.
         self._auto_subscriber.subscribe()
 
     def clear(self):
@@ -1819,8 +2051,14 @@ class RobotPoseBridgeToROS(BasicBridgeToROS):
         Stop handling messages and free resources.
         """
         super().clear()
+        if self.ground_truth_tf_topic:
+            self.topics_managers.ros_topics_manager.remove_publisher(
+                self.ground_truth_tf_topic, self._ros_topic_peer_change_cb
+            )
+            self.ground_truth_tf_topic = None
         if self.frame_id is not None:
-            self.topics_managers.tf_broadcaster.remove_frame(self.frame_id)
+            if self.publish_tf:
+                self.topics_managers.tf_broadcaster.remove_frame(self.frame_id)
             self.frame_id = None
 
     def _projectairsim_topic_update_cb(
@@ -1855,20 +2093,38 @@ class RobotPoseBridgeToROS(BasicBridgeToROS):
                 self.ros_topic_name, posestamped
             )
 
+            # Publish ground truth as a transform on its own topic
+            if self.ground_truth_tf_topic:
+                transform_stamped = rosgeommsg.TransformStamped()
+                transform_stamped.header = posestamped.header
+                transform_stamped.header.frame_id = self.frame_id_parent
+                transform_stamped.child_frame_id = self.frame_id
+                transform_stamped.transform.translation = rosgeommsg.Vector3(
+                    x=posestamped.pose.position.x,
+                    y=posestamped.pose.position.y,
+                    z=posestamped.pose.position.z,
+                )
+                transform_stamped.transform.rotation = posestamped.pose.orientation
+                self.topics_managers.ros_topics_manager.publish(
+                    self.ground_truth_tf_topic,
+                    rostf2msg.TFMessage(transforms=[transform_stamped]),
+                )
+
             # Update transform frame
-            self.transform.translation = rosgeommsg.Vector3(
-                x=posestamped.pose.position.x,
-                y=posestamped.pose.position.y,
-                z=posestamped.pose.position.z,
-            )
-            self.transform.rotation = posestamped.pose.orientation
-            self.topics_managers.tf_broadcaster.set_frame(
-                frame_id=self.frame_id,
-                transform=self.transform,
-                timevalue=self.topics_managers.ros_node.get_time_from_msg(
-                    posestamped.header.stamp
-                ),
-            )
+            if self.publish_tf:
+                self.transform.translation = rosgeommsg.Vector3(
+                    x=posestamped.pose.position.x,
+                    y=posestamped.pose.position.y,
+                    z=posestamped.pose.position.z,
+                )
+                self.transform.rotation = posestamped.pose.orientation
+                self.topics_managers.tf_broadcaster.set_frame(
+                    frame_id=self.frame_id,
+                    transform=self.transform,
+                    timevalue=self.topics_managers.ros_node.get_time_from_msg(
+                        posestamped.header.stamp
+                    ),
+                )
 
     def _ros_topic_peer_change_cb(self, ros_topic_name, num_peer):
         """

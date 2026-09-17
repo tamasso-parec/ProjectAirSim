@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from geometry_msgs.msg import Twist
 from std_srvs.srv import SetBool, Trigger
 
+from projectairsim_rosbridge import utils
 from projectairsim_rosbridge.topic_helpers import RobotControlHandler
 
 
@@ -38,9 +39,10 @@ class FakeROSTopicsManager:
 
 
 class FakeTopicsManagers:
-    def __init__(self):
+    def __init__(self, convention=utils.CONVENTION_NWU):
         self.ros_node = FakeROSNode()
         self.ros_topics_manager = FakeROSTopicsManager()
+        self.coords = utils.CoordinateConverter(convention)
         self.logger = SimpleNamespace(
             info=lambda *args, **kwargs: None,
             exception=lambda *args, **kwargs: None,
@@ -56,8 +58,8 @@ class FakeTopicsManagers:
         return None
 
 
-def make_handler():
-    managers = FakeTopicsManagers()
+def make_handler(convention=utils.CONVENTION_NWU):
+    managers = FakeTopicsManagers(convention)
     handler = RobotControlHandler(
         robot_path="/airsim_node/robots/Drone1",
         topics_managers=managers,
@@ -143,3 +145,26 @@ def test_clear_destroys_topics_and_services_idempotently():
 
     assert not managers.ros_topics_manager.subscribers
     assert all(service.destroyed for service in services)
+
+
+def test_cmd_vel_follows_the_configured_world_convention():
+    """
+    cmd_vel is a world-frame request, so an ENU bridge must rotate it into
+    Project AirSim's NED rather than only negating axes.
+    """
+    managers, handler = make_handler(utils.CONVENTION_ENU)
+    command = Twist()
+    command.linear.x = 1.0  # east
+    command.linear.y = 2.0  # north
+    command.linear.z = 3.0  # up
+    command.angular.z = 0.4  # yaw about ENU up
+
+    handler.handle_ros_cmd_vel("unused", command)
+
+    params = managers.requests[-1]["params"]
+    # NED x is north, y is east, z is down.
+    assert params["vx"] == 2.0
+    assert params["vy"] == 1.0
+    assert params["vz"] == -3.0
+    # Yaw about ENU up is the negated NED yaw rate in both conventions.
+    assert params["yaw"] == -0.4

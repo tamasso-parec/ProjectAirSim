@@ -1,0 +1,183 @@
+---
+# Project AirSim ROS bridge interface profile (example).
+#
+# Project AirSim names its topics after the loaded scene and robot, for
+# example:
+#
+#   /Sim/SceneBasicDrone/robots/Drone1/actual_pose
+#   /Sim/SceneBasicDrone/robots/Drone1/sensors/RGBD/scene_camera
+#
+# An existing ROS stack usually expects its own fixed topic names and
+# transform frames.  A profile declares that mapping so Project AirSim can
+# stand in for another simulator without modifying the stack, in the spirit of
+# ros_gz_bridge's configuration file.
+#
+# Pass it with:
+#
+#   ros2 launch projectairsim_ros2 projectairsim_bridge_ros2.launch.py \
+#     interface_profile:=/path/to/this/file.yaml
+#
+# Every section is optional.  Omitting the file entirely reproduces the
+# bridge's default behaviour.
+#
+# The worked example below maps a Project AirSim quadrotor carrying one RGB-D
+# camera onto the topic and frame names used by a PX4 offboard navigation
+# stack built around a Gazebo x500 with a RealSense D435.
+
+# World frame convention.
+#
+#   nwu - The bridge's historical behaviour and the default: Project AirSim
+#         NED becomes North-West-Up.  Self-consistent, but a world-aligned
+#         "map" frame has X pointing north rather than east, so it is not the
+#         ENU that REP 103 and most ROS software assume.
+#   enu - Standard ROS East-North-Up.  Choose this for any stack that assumes
+#         REP 103, which is almost all of them.
+#
+# Body-relative quantities (IMU rates and accelerations, magnetometer body
+# field, sensor-frame point clouds) always convert Project AirSim FRD to ROS
+# FLU and are unaffected by this setting.
+frame_convention: enu
+
+# Parent frame for robot and sensor transforms the bridge broadcasts.
+world_frame: map
+
+# Simulated time.
+#
+# Project AirSim stamps every sensor message with its simulation clock.  When
+# enabled the bridge stamps bridged messages from those values instead of the
+# wall clock, and republishes the simulation clock on /clock so nodes running
+# with use_sim_time share the simulator's notion of time.
+#
+# The clock only advances when the simulator produces data, so /clock starts
+# once a scene containing a robot is loaded.  This mirrors Gazebo, which
+# publishes no clock until its server runs.
+#
+# Setting the bridge node's standard use_sim_time parameter enables this too.
+sim_time:
+  enabled: true
+  clock_topic: /clock
+  # Minimum simulation-time advance between /clock messages, which bounds the
+  # clock rate.  1 ms caps it at 1 kHz.
+  min_step_ms: 1.0
+
+# Depth image conversion.
+#
+#   32FC1 - Metres as 32-bit float, the default and what the ROS depth
+#           ecosystem expects (depth_image_proc, RTAB-Map, ORB-SLAM3).
+#           Samples with no reading become NaN and samples beyond range become
+#           +infinity, so consumers skip them instead of mapping phantom
+#           geometry.
+#   16UC1 - Millimetres, unchanged from Project AirSim's wire format.
+#           Out-of-range samples become 0, the 16UC1 "no reading" value.
+#   mono8 - The bridge's output before metric depth was supported, scaled so
+#           that mono8_max_range_m maps to 255.  Lossy: suitable for viewing
+#           an image, not for mapping or SLAM.
+depth:
+  encoding: 32FC1
+  # Treat anything beyond this as out of range, matching the far clip of the
+  # real or simulated sensor being stood in for.  0 disables the clamp and
+  # keeps Project AirSim's full 65.535 m representable range.
+  max_range_m: 10.0
+  # Only used by the mono8 encoding.
+  mono8_max_range_m: 6.0
+
+# Point clouds reprojected from depth images.
+#
+# Project AirSim cameras publish depth images, not clouds.  Naming a "points"
+# topic on a depth camera below makes the bridge reproject that camera's depth
+# image using its own intrinsics, so a stack expecting a depth-camera cloud
+# gets one without a separate depth_image_proc node.
+#
+# The cloud is organised (one point per pixel) and not dense: invalid pixels
+# are NaN, exactly as a Gazebo depth camera publishes them.
+#
+#   optical - X right, Y down, Z forward. The REP 103 optical convention and
+#             what depth_image_proc and Gazebo produce. The default.
+#   ros     - X forward, Y left, Z up, for a stack whose camera frame is a
+#             body frame rather than an optical one.
+points:
+  frame_convention: optical
+  # Keep every Nth pixel in each direction. 1 keeps them all; raising it cuts
+  # the cloud size quadratically when full resolution is not needed.
+  decimation: 1
+
+# Collision reporting.
+#
+# Project AirSim reports collisions on each robot's collision_info topic. ROS
+# has no canonical collision message, so the shape is explicit:
+#
+#   none        - Do not bridge collisions. The default.
+#   gz_contacts - ros_gz_interfaces/msg/Contacts, what a Gazebo-based stack
+#                 subscribes to. Needs the ros_gz_interfaces package
+#                 (sudo apt install ros-$ROS_DISTRO-ros-gz-interfaces), which
+#                 is imported only when this is selected, so it is not a
+#                 dependency for everyone else.
+#
+# Name the topic under "topics" below, as with any other topic.
+#
+# Left at "none" here so this example runs without installing anything extra.
+# A stack standing in for Gazebo wants gz_contacts; install the package above
+# and change this one line.
+collision:
+  message: none
+
+# Transform broadcasting.
+#
+# A ROS transform frame can have only one parent.  A stack with its own state
+# estimator, such as a PX4 or SLAM pipeline, publishes the vehicle frame
+# itself, and a second publisher corrupts the transform tree.  Likewise a
+# stack that describes its own sensor extrinsics, through a robot description
+# or static transform publishers, owns the sensor frames.
+#
+# Both default to true, which is the bridge's historical behaviour.
+tf:
+  publish_robot_tf: false
+  publish_sensor_tf: false
+  # Simulator ground truth as a TFMessage, on its own topic rather than /tf.
+  # Evaluation code can then consume ground-truth poses without a second
+  # publisher fighting the estimator for the vehicle frame. Empty publishes
+  # none, which is the default.
+  ground_truth_topic: /ground_truth/tf
+
+# Transform frame IDs for Project AirSim robot and sensor paths.
+#
+# Patterns are shell-style globs matched against the full Project AirSim path,
+# where "*" also matches "/".  Entries are tried in file order and the first
+# match wins, so put specific patterns before general ones.
+#
+# Match robots on their robot path and sensors on their sensor path; every
+# image type of one camera shares that camera's frame, as they share an
+# optical centre.
+frames:
+  "*/robots/Drone1": x500_realsense
+  "*/robots/Drone1/sensors/RGBD": x500_realsense/realsense_d435/color_optical_frame
+
+# ROS topic names for Project AirSim topics.
+#
+# A value may be either:
+#
+#   * a string, used as the ROS topic name.  For a camera topic it is the base
+#     name, and the bridge appends "/image" and "/camera_info" as usual.
+#   * a mapping with "image", and optionally "camera_info" and "points", to
+#     name a camera's topics explicitly when they do not share a base name.
+#     "points" additionally turns on depth reprojection for that camera.
+topics:
+  "*/robots/Drone1/actual_pose": /ground_truth/pose
+
+  # Colour: base name gives /rgbd_camera/image and /rgbd_camera/camera_info.
+  "*/robots/Drone1/sensors/RGBD/scene_camera": /rgbd_camera
+
+  # Collision reports. Inert until collision.message above is not "none".
+  "*/robots/Drone1/collision_info": /evaluation/contacts
+
+  # Depth: the stack expects /rgbd_camera/depth_image, which is not
+  # "<base>/image", so name both topics explicitly. Naming "points" as well
+  # makes the bridge reproject this depth image into a cloud.
+  #
+  # Use depth_planar_camera (planar Z depth, image-type 1) rather than
+  # depth_camera (perspective distance) when standing in for a Gazebo depth
+  # camera or a RealSense.
+  "*/robots/Drone1/sensors/RGBD/depth_planar_camera":
+    image: /rgbd_camera/depth_image
+    camera_info: /rgbd_camera/depth_camera_info
+    points: /rgbd_camera/points

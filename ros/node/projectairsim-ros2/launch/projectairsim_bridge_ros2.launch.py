@@ -17,6 +17,23 @@ def generate_launch_description():
         DeclareLaunchArgument("cmd_vel_timeout_sec", default_value="1.0"),
         DeclareLaunchArgument("takeoff_timeout_sec", default_value="20.0"),
         DeclareLaunchArgument("land_timeout_sec", default_value="60.0"),
+        DeclareLaunchArgument(
+            "interface_profile",
+            default_value="",
+            description=(
+                "Path to an interface profile YAML file mapping Project "
+                "AirSim topics and frames onto fixed ROS names. Empty uses "
+                "the bridge's default names and conventions."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "use_sim_time",
+            default_value="false",
+            description=(
+                "Publish /clock from Project AirSim simulation timestamps and "
+                "stamp bridged messages with simulation time."
+            ),
+        ),
     ]
 
     bridge = Node(
@@ -43,6 +60,10 @@ def generate_launch_description():
                 ),
                 "land_timeout_sec": ParameterValue(
                     LaunchConfiguration("land_timeout_sec"), value_type=float
+                ),
+                "interface_profile": LaunchConfiguration("interface_profile"),
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"), value_type=bool
                 ),
             }
         ],

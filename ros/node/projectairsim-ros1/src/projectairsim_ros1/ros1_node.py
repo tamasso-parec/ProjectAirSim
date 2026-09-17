@@ -190,6 +190,10 @@ class ROS1Node(node.ROSNode):
     def get_time_from_msg(self, header_stamp):
         return header_stamp
 
+    def get_time_from_nanos(self, nanos: int):
+        nanos = int(nanos)
+        return rospy.Time(nanos // 1000000000, nanos % 1000000000)
+
     def get_time_now(self):
         return rospy.Time.now()
 

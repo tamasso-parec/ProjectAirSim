@@ -1,69 +1,40 @@
 # Project AirSim Quick Start
 
-## Launch Blocks
+All commands run from `/home/tom/Documents/ProjectAirSim`.
 
-In the first terminal:
+## 1. Launch Blocks
 
 ```bash
-cd /home/tom/Documents/ProjectAirSim
 ./packages/Blocks/Development/Linux/Blocks.sh -log
 ```
 
-Wait for the Blocks environment to open.
+Wait for the window to open. The scene starts empty — that is expected; nothing spawns until a scene is loaded.
 
-## Run the drone smoke test
+Headless variants: `-RenderOffScreen` keeps cameras working, `-nullrhi` disables rendering entirely (no camera images). Use the Development package for testing, Shipping for performance.
 
-In a second terminal:
+## 2. Smoke test with the Python client
 
 ```bash
-cd /home/tom/Documents/ProjectAirSim
 source airsim-venv/bin/activate
 cd client/python/example_user_scripts
 python hello_drone.py
 ```
 
-The example should spawn `Drone1`, display its camera feeds, take off, move up
-and down, and land. Keep Blocks running while using client scripts.
+`Drone1` should spawn, show its camera feeds, take off, move and land. Other examples live alongside it (`hello_rover.py`, and more).
 
-Other examples are available in `client/python/example_user_scripts`, including:
+## 3. ROS 2 bridge
 
-```bash
-python hello_rover.py
-```
-
-## Headless launch options
-
-Run with off-screen rendering (camera rendering remains available):
+Build once, then launch against the running Blocks instance:
 
 ```bash
-./packages/Blocks/Development/Linux/Blocks.sh -RenderOffScreen
-```
-
-Run without rendering (camera images are unavailable):
-
-```bash
-./packages/Blocks/Development/Linux/Blocks.sh -nullrhi
-```
-
-Use the Development package for normal testing and the Shipping package for
-performance testing.
-
-## ROS 2 bridge (velocity control)
-
-In a second terminal, build once, then launch the bridge against a running Blocks instance:
-
-```bash
-cd /home/tom/Documents/ProjectAirSim
 source /opt/ros/humble/setup.bash
-colcon build \
-  --base-paths ros/node/projectairsim-rosbridge ros/node/projectairsim-ros2 \
-  --symlink-install
+colcon build --base-paths ros/node/projectairsim-rosbridge ros/node/projectairsim-ros2 --symlink-install
 source install/setup.bash
 ros2 launch projectairsim_ros2 projectairsim_bridge_ros2.launch.py \
   sim_config_path:="$PWD/client/python/example_user_scripts/sim_config"
 ```
 
-Blocks starts with an empty scene, so spawn `Drone1` by loading a scene through the bridge (in another terminal):
+In another terminal, spawn the drone by loading a scene:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -71,66 +42,68 @@ ros2 topic pub --once /ProjectAirSim/node/projectairsim/load_scene std_msgs/msg/
   '{data: scene_basic_drone.jsonc}'
 ```
 
-This spawns robot/sensor topics and services under `/Sim/SceneBasicDrone/robots/Drone1` (scene id + robot name from the scene JSON). For example:
+Then fly it:
 
 ```bash
-ros2 service call /Sim/SceneBasicDrone/robots/Drone1/enable_api_control std_srvs/srv/SetBool '{data: true}'
-ros2 service call /Sim/SceneBasicDrone/robots/Drone1/arm std_srvs/srv/SetBool '{data: true}'
-ros2 service call /Sim/SceneBasicDrone/robots/Drone1/takeoff std_srvs/srv/Trigger '{}'
-ros2 topic pub --rate 10 /Sim/SceneBasicDrone/robots/Drone1/cmd_vel geometry_msgs/msg/Twist \
+export ROBOT_PATH=/Sim/SceneBasicDrone/robots/Drone1
+ros2 service call $ROBOT_PATH/enable_api_control std_srvs/srv/SetBool '{data: true}'
+ros2 service call $ROBOT_PATH/arm std_srvs/srv/SetBool '{data: true}'
+ros2 service call $ROBOT_PATH/takeoff std_srvs/srv/Trigger '{}'
+ros2 topic pub --rate 10 $ROBOT_PATH/cmd_vel geometry_msgs/msg/Twist \
   '{linear: {x: 2.0, y: 0.0, z: 0.0}, angular: {z: 0.0}}'
 ```
 
-See [`docs/ros/ros.md`](docs/ros/ros.md) for full setup, topics/services, and `cmd_vel` usage.
+## 4. Replacing another simulator
 
-## PX4 offboard control over ROS 2
-
-This is the fiddly one: four processes (Unreal, PX4 SITL, the ROS 2 bridge, MAVROS2) that must start **in this order** and hit specific checkpoints. See [`docs/ros/ros.md#px4-offboard-control-mavros2`](docs/ros/ros.md#px4-offboard-control-mavros2) for the full explanation, every checkpoint's expected output, and a troubleshooting table — this section is just the command sequence. One-time setup (PX4 SITL build, MAVROS2 install) is also there.
-
-Requires a robot config with `"type": "px4-api"`, e.g. `robot_quadrotor_px4_sitl.jsonc` / `scene_px4_sitl.jsonc`.
-
-Terminal 1 — Blocks:
+To have the bridge present the topic names, transform frames, ENU convention, simulated time, metric depth and point clouds that an existing ROS 2 stack already expects, pass an interface profile:
 
 ```bash
-cd /home/tom/Documents/ProjectAirSim
-./packages/Blocks/Development/Linux/Blocks.sh -log
-```
-
-Terminal 2 — PX4 SITL. Wait for `Waiting for simulator to connect on TCP port 4560` before moving on:
-
-```bash
-cd PX4/PX4-Autopilot
-make px4_sitl none_iris
-```
-
-Terminal 3 — ROS 2 bridge + MAVROS2:
-
-```bash
-cd /home/tom/Documents/ProjectAirSim
-source /opt/ros/humble/setup.bash
-sudo apt install ros-humble-mavros ros-humble-mavros-extras   # first time only
-ros2 run mavros install_geographiclib_datasets.sh              # first time only
-source install/setup.bash
-ros2 launch projectairsim_ros2 projectairsim_px4_bridge.launch.py \
+ros2 launch projectairsim_ros2 projectairsim_bridge_ros2.launch.py \
   sim_config_path:="$PWD/client/python/example_user_scripts/sim_config" \
-  fcu_url:="udp://:14550@127.0.0.1:14550"
+  interface_profile:="$PWD/ros/node/projectairsim-ros2/config/interface_profile_example.yaml"
 ```
 
-Terminal 4 — load the scene (this is what makes Project AirSim connect to PX4; also `/Sim/SceneBasicDrone/robots/Drone1`, same scene id/robot name as the default scene):
+See [Standing in for another simulator](docs/ros/ros.md#standing-in-for-another-simulator).
+
+## 5. PX4 offboard control
+
+Two transports: **uXRCE-DDS** (`px4_msgs`, `/fmu/*`) and **MAVROS2** (`/mavros/*`). Both need a `px4-api` robot config.
+
+The order always matters, because PX4 waits on TCP 4560 and Project AirSim only connects once a scene with a `px4-api` robot is loaded: **Blocks → PX4 SITL → bridge → load scene → wait for `home_set` → arm.**
+
+For uXRCE-DDS, one launch file handles all of it (with Blocks already running):
+
+```bash
+source /opt/ros/humble/setup.bash && source install/setup.bash
+ros2 launch projectairsim_ros2 projectairsim_px4_sitl.launch.py \
+  px4_dir:=/path/to/PX4-Autopilot \
+  sim_config_path:="$PWD/client/python/example_user_scripts/sim_config" \
+  scene:=scene_x500_realsense_ground.jsonc \
+  interface_profile:="$PWD/ros/node/projectairsim-ros2/config/interface_profile_example.yaml"
+```
+
+**Do not arm until `home_set` appears** in the PX4 output — that is the most common sticking point.
+
+One-time setup (PX4, the Micro XRCE-DDS Agent, `px4_msgs`, MAVROS), the X500 + RealSense vehicle that mirrors PX4's Gazebo `x500_realsense` model, the flight sequence for each transport, shutdown order and a troubleshooting table are all in [PX4 offboard control](docs/ros/ros.md#px4-offboard-control).
+
+## Running tests
 
 ```bash
 source /opt/ros/humble/setup.bash
-ros2 topic pub --once /ProjectAirSim/node/projectairsim/load_scene std_msgs/msg/String \
-  '{data: scene_px4_sitl.jsonc}'
+colcon test --packages-select projectairsim_rosbridge projectairsim_ros2
+colcon test-result --verbose
 ```
 
-Back in Terminal 2, wait for `home_set` in the PX4 console log before arming — arming or switching to OFFBOARD earlier fails with `Takeoff denied, disarm and re-try`. Then, in Terminal 4, confirm `ros2 topic echo /mavros/state --once` shows `connected: true`, and arm, switch to OFFBOARD, and fly to a setpoint:
+> If a simulation is already running on this machine, isolate the test run first — the suite publishes real `/clock` messages, which would disturb any node using `use_sim_time` on the same DDS domain:
+>
+> ```bash
+> export ROS_DOMAIN_ID=91     # anything but the default 0
+> ```
 
-```bash
-ros2 topic pub --rate 20 /mavros/setpoint_position/local geometry_msgs/msg/PoseStamped \
-  '{header: {frame_id: "map"}, pose: {position: {x: 0.0, y: 0.0, z: 2.0}}}' &
-ros2 service call /mavros/cmd/arming mavros_msgs/srv/CommandBool '{value: true}'
-ros2 service call /mavros/set_mode mavros_msgs/srv/SetMode '{custom_mode: "OFFBOARD"}'
-```
+## Where to look next
 
-When done, shut down in order (stop setpoint publisher → land/disarm → Ctrl-C Terminal 3 → `shutdown` in Terminal 2's PX4 console → close Blocks) — a leftover PX4 process is the most common reason the *next* session fails. Full details in [`docs/ros/ros.md`](docs/ros/ros.md#px4-offboard-control-mavros2).
+| Topic | Document |
+| --- | --- |
+| Full bridge reference: topics, services, transforms, profile options | [`docs/ros/ros.md`](docs/ros/ros.md) |
+| PX4 controller configuration | [`docs/controllers/px4/`](docs/controllers/px4/) |
+| Robot and scene configuration | [`docs/config_robot.md`](docs/config_robot.md) |

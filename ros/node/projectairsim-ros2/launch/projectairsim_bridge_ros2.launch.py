@@ -27,6 +27,15 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "connect_timeout_sec",
+            default_value="60.0",
+            description=(
+                "How long to keep retrying a connection to Project AirSim "
+                "that is refused because the simulator is still starting. "
+                "Zero makes a single attempt."
+            ),
+        ),
+        DeclareLaunchArgument(
             "use_sim_time",
             default_value="false",
             description=(
@@ -62,6 +71,9 @@ def generate_launch_description():
                     LaunchConfiguration("land_timeout_sec"), value_type=float
                 ),
                 "interface_profile": LaunchConfiguration("interface_profile"),
+                "connect_timeout_sec": ParameterValue(
+                    LaunchConfiguration("connect_timeout_sec"), value_type=float
+                ),
                 "use_sim_time": ParameterValue(
                     LaunchConfiguration("use_sim_time"), value_type=bool
                 ),

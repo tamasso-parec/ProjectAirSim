@@ -11,10 +11,31 @@
       "type": "robot",
       "name": "Drone1",
       "origin": {
-        // 0.3 m above the ground, matching the Gazebo spawn height. Z is down
-        // in this frame, so the value is negative.
-        "xyz": "0.0 0.0 -0.3",
-        "rpy-deg": "0 0 0"
+        // 1.2 m up, not the 0.3 m the Gazebo spawn uses. Z is down in this
+        // frame, so the value is negative.
+        //
+        // Collision geometry comes from the visual mesh, /Drone/Quadrotor1,
+        // and a link's "collision" block can only set restitution, friction
+        // and enabled -- there is no way to give it a tighter hull. That
+        // mesh's collision reaches about 1.19 m below the body origin, which
+        // is where Project AirSim's own scenes settle.
+        //
+        // Spawning at 0.3 m therefore starts the vehicle 0.9 m INSIDE the
+        // ground. Unreal then reports a depenetration direction rather than a
+        // surface normal -- lateral, for a box whose smallest overlap is
+        // sideways -- and fast physics only clamps a body to a surface on a
+        // vertical normal (IsLandingCollision). The vehicle is never landed,
+        // sinks further, and falls without end. Starting just clear of the
+        // hull makes the first contact a real one.
+        //
+        // The cost is a starting altitude 0.9 m above the Gazebo condition's.
+        // It washes out once the takeoff node climbs to its commanded height,
+        // but it is a difference in the initial state and worth knowing.
+        "xyz": "0.0 0.0 -1.2",
+        // Nose along ROS +X (east), matching the Gazebo model spawned at
+        // ENU yaw 0. The bridge publishes the world as ENU, under which
+        // Project AirSim north becomes ROS +Y, so NED yaw 90 is ROS yaw 0.
+        "rpy-deg": "0 0 90"
       },
       "robot-config": "robot_x500_realsense_px4_sitl.jsonc"
     }
@@ -29,7 +50,13 @@
     "type": "steppable",
     "step-ns": 3000000,
     "real-time-update-rate": 3000000,
-    "pause-on-start": false
+    // Paused so that the bridge can apply the interface profile's scene
+    // changes before any time passes. Blocks puts a cube across the world
+    // origin, and a vehicle that spawns inside it starts its run embedded in
+    // geometry with a horizontal contact normal, which Project AirSim's
+    // fast physics does not treat as a landing -- so it never lands. The
+    // bridge removes the level's props and then starts the clock.
+    "pause-on-start": true
   },
   "home-geo-point": {
     // Must agree with LPE_LAT/LPE_LON in the robot config, or PX4 sets its

@@ -5,6 +5,7 @@ MIT License.
 ROS bridge for Project AirSim: Sensor message conversion module
 """
 
+import array
 import math
 
 import geometry_msgs.msg as rosgeommsg
@@ -317,7 +318,7 @@ class MsgConverter:
         image.is_bigendian = int(projectairsim_image_bgr8["big_endian"])
 
         # Convert image data to uncompressed bitmap data
-        image.data = projectairsim_image_bgr8["data"]
+        image.data = self._as_ros_bytes(projectairsim_image_bgr8["data"])
         image.step = 3 * image.width
 
         return image
@@ -372,14 +373,16 @@ class MsgConverter:
         encoding = self.depth.encoding
         if encoding == DepthSettings.ENCODING_32FC1:
             depth_m = self._depth_metres(depth_mm)
-            image.data = depth_m.tobytes()
+            image.data = self._as_ros_bytes(depth_m.tobytes())
             image.encoding = "32FC1"
             image.step = 4 * width
             return image
 
         if encoding == DepthSettings.ENCODING_MONO8:
             scaled = depth_mm.astype("float32") * (255.0 / self.max_depth_mm)
-            image.data = np.clip(scaled, 0.0, 255.0).astype("uint8").tobytes()
+            image.data = self._as_ros_bytes(
+                np.clip(scaled, 0.0, 255.0).astype("uint8").tobytes()
+            )
             image.encoding = "mono8"
             image.step = width
             return image
@@ -397,7 +400,7 @@ class MsgConverter:
             invalid = invalid | (depth_mm > max_range_mm)
         if invalid.any():
             output = np.where(invalid, np.uint16(0), output).astype("<u2")
-        image.data = output.tobytes()
+        image.data = self._as_ros_bytes(output.tobytes())
         image.encoding = "16UC1"
         image.step = 2 * width
         return image
@@ -428,6 +431,22 @@ class MsgConverter:
         depth_m = np.where(too_far, np.float32("inf"), depth_m)
 
         return depth_m.astype("<f4")
+
+    @staticmethod
+    def _as_ros_bytes(raw):
+        """
+        Wrap a bytes-like payload for a ROS ``uint8[]`` field.
+
+        rclpy stores these fields as ``array.array('B')`` and validates any
+        other sequence element by element on assignment.  For a payload of a
+        few megabytes -- a 640x480 organised point cloud is 3.7 MB -- that
+        check costs around 190 ms, against a 33 ms budget at 30 Hz, and it is
+        paid on the client's single receive thread.  The simulator's socket
+        then backs up behind it and its sends start timing out, which surfaces
+        as lost vehicle poses rather than as anything pointing here.
+        Constructing the array directly skips the check and takes 0.14 ms.
+        """
+        return array.array("B", raw)
 
     def convert_depth_image_to_point_cloud(
         self,
@@ -526,7 +545,7 @@ class MsgConverter:
         point_cloud.is_bigendian = False
         point_cloud.point_step = 12
         point_cloud.row_step = 12 * columns
-        point_cloud.data = cloud.tobytes()
+        point_cloud.data = self._as_ros_bytes(cloud.tobytes())
         # Invalid pixels are retained as NaN to keep the cloud organised.
         point_cloud.is_dense = False
 

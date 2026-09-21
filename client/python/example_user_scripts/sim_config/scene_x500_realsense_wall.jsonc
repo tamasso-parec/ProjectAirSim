@@ -3,18 +3,47 @@
   //
   // Equivalent to the Gazebo `wall` world used by the point-to-point planner
   // scenarios: a ground plane and one wall between the vehicle and a goal
-  // roughly 12 m ahead, so a planner has to route around it.
+  // 12 m ahead, so a planner has to route around it.
   //
-  // The Gazebo wall is a 0.2 m thick, 8 m wide, 6 m tall slab centred 6 m
-  // ahead of the spawn point. The box below is scaled to match.
+  // Geometry is taken from unseen_gz/unseen_gazebo/worlds/wall.sdf, whose
+  // wall model sits at pose "10 0 0" with a 0.5 x 10.0 x 10.0 m box. Centred
+  // on z = 0 it is half buried, so about 5 m of it stands above ground.
+  //
+  // Those are ENU metres; this file is NED. The bridge publishes the world as
+  // ENU (see the interface profile), and under that conversion Project AirSim
+  // X (north) becomes ROS Y and Project AirSim Y (east) becomes ROS X. Every
+  // pose below is therefore the Gazebo one with X and Y exchanged and Z
+  // negated -- which is also why the vehicle's yaw is 90 and not 0.
   "id": "SceneX500RealsenseWall",
   "actors": [
     {
       "type": "robot",
       "name": "Drone1",
       "origin": {
-        "xyz": "0.0 0.0 -0.3",
-        "rpy-deg": "0 0 0"
+        // 1.2 m up, not the 0.3 m the Gazebo spawn uses.
+        //
+        // Collision geometry comes from the visual mesh, /Drone/Quadrotor1,
+        // and a link's "collision" block can only set restitution, friction
+        // and enabled -- there is no way to give it a tighter hull. That
+        // mesh's collision reaches about 1.19 m below the body origin, which
+        // is where Project AirSim's own scenes are seen to settle.
+        //
+        // Spawning at 0.3 m therefore starts the vehicle 0.9 m INSIDE the
+        // ground. Unreal then reports a depenetration direction rather than a
+        // surface normal -- lateral, for a box whose smallest overlap is
+        // sideways -- and fast physics only clamps a body to a surface on a
+        // vertical normal (IsLandingCollision). The vehicle is never landed,
+        // sinks further, and falls without end. Starting just clear of the
+        // hull makes the first contact a real one.
+        //
+        // The cost is a starting altitude 0.9 m above the Gazebo condition's.
+        // It washes out once the takeoff node climbs to its commanded height,
+        // but it is a difference in the initial state and worth knowing.
+        "xyz": "0.0 0.0 -1.2",
+        // Nose along ROS +X (east), matching the Gazebo model spawned at ENU
+        // yaw 0. In NED that is yaw 90, and it is what PX4 reports as its
+        // initial heading on both backends.
+        "rpy-deg": "0 0 90"
       },
       "robot-config": "robot_x500_realsense_px4_sitl.jsonc"
     }
@@ -23,19 +52,34 @@
     "sim-packaged": [
       {
         "name": "Wall",
-        // Blocks ships Unreal's rounded template cube as its generic box mesh.
-        // Confirm the exact name available in your environment with
+        // Spawning looks the name up in Unreal's asset registry by bare asset
+        // name, and the registry of a packaged build holds only what was
+        // cooked into it. Blocks cooks 1M_Cube and 1M_Cube_Chamfer, and no
+        // template cube, so this is the generic box mesh here. In another
+        // environment, confirm the name with
         //   world.list_assets(".*[Cc]ube.*")
-        // and change this one line if it differs.
-        "asset-path": "TemplateCube_Rounded",
-        // The template cube is a 100 cm cube, so the scale is the wall's size
-        // in metres: 0.2 m thick (X, forward), 8 m wide (Y), 6 m tall (Z).
-        "scale": "0.2 8.0 6.0",
+        // and change this one line.
+        "asset-path": "1M_Cube",
+        // 1M_Cube is a 100 cm cube, so the scale is the wall's size in
+        // metres. The Gazebo box is 0.5 (east) x 10 (north) x 10 (up); in
+        // NED that is 10 along X (north), 0.5 along Y (east) and 10 down, so
+        // the thin axis stays the one the vehicle flies into.
+        //
+        // Gazebo gives this model a 0.5 x 10.0 x 2.0 m *collision* box under
+        // a 10 m tall visual, so there a vehicle above 1 m passes through the
+        // wall it can see. A spawned mesh here has one geometry for both, and
+        // the visual is the one that matters: it is what the depth camera
+        // reports and therefore what the planner under test reasons about.
+        // The consequence is that flying into the wall registers a contact
+        // here that the Gazebo run would have missed -- which only happens
+        // when the planner has already failed.
+        "scale": "10.0 0.5 10.0",
         "physics-enabled": false,
         "origin": {
-          // 6 m ahead of the spawn point, centred vertically on its own
-          // height so that it sits on the ground. Z is down.
-          "xyz": "6.0 0.0 -3.0",
+          // The Gazebo pose is ENU (10, 0, 0): 10 m east, centred on the
+          // ground plane. In NED that is 10 m along Y, so the wall stands
+          // between the vehicle and a goal published at ROS x = 12.
+          "xyz": "0.0 10.0 0.0",
           "rpy-deg": "0 0 0"
         }
       }
@@ -45,7 +89,13 @@
     "type": "steppable",
     "step-ns": 3000000,
     "real-time-update-rate": 3000000,
-    "pause-on-start": false
+    // Paused so that the bridge can apply the interface profile's scene
+    // changes before any time passes. Blocks puts a cube across the world
+    // origin, and a vehicle that spawns inside it starts its run embedded in
+    // geometry with a horizontal contact normal, which Project AirSim's
+    // fast physics does not treat as a landing -- so it never lands. The
+    // bridge removes the level's props and then starts the clock.
+    "pause-on-start": true
   },
   "home-geo-point": {
     "latitude": 47.641468,

@@ -5,6 +5,7 @@ MIT License.
 ROS bridge for Project AirSim: interface profile (topic and frame aliases)
 """
 import fnmatch
+import re
 
 import yaml
 
@@ -168,6 +169,60 @@ class CollisionSettings:
         return self.message != self.MESSAGE_NONE
 
 
+class SceneSettings:
+    """
+    Changes made to the loaded scene so that it matches the world another
+    simulator would have presented.
+
+    A photorealistic environment is a level somebody built, and it arrives
+    with everything that level contains.  The world an existing stack was
+    evaluated against is usually barer, because a Gazebo world holds exactly
+    the models the experiment asked for and nothing else.  Comparing results
+    across the two therefore means being able to take the level's own
+    furniture out of the way, and leaving it in is not a neutral choice: it
+    is scenery the other simulator's runs never had to fly through.
+
+    ``remove_objects`` is a list of regular expressions matched against scene
+    object names.  Matching objects are destroyed after the scene loads,
+    including actors placed in the level rather than spawned by the scene
+    config.
+    """
+
+    def __init__(self, remove_objects=None):
+        if remove_objects is None:
+            remove_objects = []
+        if isinstance(remove_objects, str) or not isinstance(
+            remove_objects, (list, tuple)
+        ):
+            raise ProfileError(
+                "scene.remove_objects must be a list of regular expressions"
+            )
+
+        patterns = []
+        for pattern in remove_objects:
+            if not isinstance(pattern, str) or not pattern:
+                raise ProfileError(
+                    "scene.remove_objects entries must be non-empty strings"
+                )
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                # Caught here rather than at the simulator, which would
+                # otherwise just return no matches and quietly leave the
+                # objects in place.
+                raise ProfileError(
+                    f'scene.remove_objects entry "{pattern}" is not a valid '
+                    f"regular expression: {exc}"
+                ) from exc
+            patterns.append(pattern)
+
+        self.remove_objects = patterns
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.remove_objects)
+
+
 class CameraTopicNames:
     """
     Resolved ROS topic names for one Project AirSim camera image type.
@@ -214,6 +269,7 @@ class InterfaceProfile:
             "tf",
             "frames",
             "topics",
+            "scene",
         }
     )
 
@@ -261,6 +317,7 @@ class InterfaceProfile:
                 **self._section(config, "collision")
             )
             self.tf = TFSettings(**self._section(config, "tf"))
+            self.scene = SceneSettings(**self._section(config, "scene"))
         except TypeError as exc:
             # Raised when a section carries an unexpected key.
             raise ProfileError(f"{source}: {exc}") from exc

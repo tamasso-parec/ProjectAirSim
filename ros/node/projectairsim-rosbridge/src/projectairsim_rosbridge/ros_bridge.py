@@ -7,6 +7,7 @@ ROS bridge for Project AirSim: Main bridge module
 
 import logging
 import re
+import time
 
 import geometry_msgs.msg as rosgeommsg
 import radar_msgs.msg as rosradarmsg
@@ -26,6 +27,8 @@ except ModuleNotFoundError as exc:
         "or add client/python/projectairsim/src and its dependencies to "
         "PYTHONPATH."
     ) from exc
+import pynng
+
 from projectairsim import ProjectAirSimClient
 from projectairsim.utils import projectairsim_log
 
@@ -179,6 +182,12 @@ class ProjectAirSimROSBridge:
     # ones a point cloud can be reprojected from.
     DEPTH_IMAGE_TYPE_SUFFIXES = ("/depth_planar_camera", "/depth_camera")
 
+    # How long to keep retrying a refused connection to Project AirSim, and
+    # how long to wait between attempts.  See _connect_client() for why the
+    # first refusal is not taken as an answer.
+    DEFAULT_CONNECT_TIMEOUT_SEC = 60.0
+    CONNECT_RETRY_INTERVAL_SEC = 0.5
+
     # -------------------------------------------------------------------------
     # ProjectAirSimROSBridge Properties
     # -------------------------------------------------------------------------
@@ -207,6 +216,7 @@ class ProjectAirSimROSBridge:
         land_timeout_sec: float = 60.0,
         interface_profile=None,
         use_sim_time: bool = False,
+        connect_timeout_sec: float = DEFAULT_CONNECT_TIMEOUT_SEC,
     ):
         """
         Constructor.
@@ -243,6 +253,9 @@ class ProjectAirSimROSBridge:
             use_sim_time - If true, enable simulated time even when the
                 profile does not.  ROS 2 callers pass their node's standard
                 use_sim_time parameter here.
+            connect_timeout_sec - How long to keep retrying a connection to
+                Project AirSim that is refused because the simulator has not
+                finished starting.  Zero or less makes a single attempt.
         """
         # TODO: make dynamic limits class or rosparam?
 
@@ -448,6 +461,7 @@ class ProjectAirSimROSBridge:
         self.cmd_vel_timeout_sec = float(cmd_vel_timeout_sec)
         self.takeoff_timeout_sec = float(takeoff_timeout_sec)
         self.land_timeout_sec = float(land_timeout_sec)
+        self.connect_timeout_sec = float(connect_timeout_sec)
         self.ros_is_started = False
         self.topics_managers = None  # Topic and transform managers
 
@@ -473,7 +487,7 @@ class ProjectAirSimROSBridge:
                 address, port_topics=port_topics, port_services=port_services
             )
             self.is_client_ours = True
-            self.projectairsim_client.connect()
+            self._connect_client(self.connect_timeout_sec)
             self.projectairsim_client.get_topic_info()
         self.is_connected_to_client = True
 
@@ -502,6 +516,68 @@ class ProjectAirSimROSBridge:
         # Start ROS processing, if so directed
         if start_ros:
             self.start_ros()
+
+    def _connect_client(self, timeout_sec: float):
+        """
+        Connect the client to Project AirSim, retrying while it is refused.
+
+        Project AirSim only begins listening on its topic and service ports
+        once Unreal has finished loading its map, which takes longer than
+        starting this bridge does.  A refused connection therefore nearly
+        always means "not up yet" rather than "not there", and treating the
+        first refusal as fatal loses a race rather than reporting a fault:
+        the bridge dies seconds before the simulator is ready, and because
+        the load_scene subscriber below is only created once this returns,
+        nothing is ever there to receive the scene.  Retry until the budget
+        is spent, and only then let the refusal through.
+
+        Arguments:
+            timeout_sec - How long to keep retrying.  Zero or less makes a
+                single attempt, which is the client's own behaviour.
+        """
+        deadline = time.monotonic() + max(timeout_sec, 0.0)
+        reported_wait = False
+
+        while True:
+            try:
+                self.projectairsim_client.connect()
+                return
+            except pynng.exceptions.ConnectionRefused:
+                # connect() builds both sockets afresh on entry, so the ones
+                # this attempt left behind would linger until the garbage
+                # collector happened to reach them.  Over a long wait that is
+                # a steady leak of file descriptors; close them here instead.
+                self._close_client_sockets()
+
+                if time.monotonic() >= deadline:
+                    raise
+
+                if not reported_wait:
+                    self.logger.info(
+                        f"Project AirSim at {self.projectairsim_client.address} is "
+                        f"not accepting connections yet; retrying for up to "
+                        f"{max(timeout_sec, 0.0):.0f} s."
+                    )
+                    reported_wait = True
+
+                time.sleep(self.CONNECT_RETRY_INTERVAL_SEC)
+
+    def _close_client_sockets(self):
+        """
+        Close whatever sockets a failed connection attempt left half-open.
+        """
+        for attribute in ("socket_topics", "socket_services"):
+            socket = getattr(self.projectairsim_client, attribute, None)
+            if socket is None:
+                continue
+            try:
+                socket.close()
+            except Exception:
+                # A socket that cannot be closed is not a reason to abandon
+                # the retry, and reporting it would bury the refusal that
+                # actually matters.
+                pass
+            setattr(self.projectairsim_client, attribute, None)
 
     def __del__(self):
         """
@@ -832,11 +908,13 @@ class ProjectAirSimROSBridge:
                 self.sim_time.reset()
 
                 # Load scene and update ROS topics to match the new scene
-                projectairsim.World(
+                world = projectairsim.World(
                     client=self.projectairsim_client,
                     scene_config_name=scene_config,
                     sim_config_path=self.sim_config_path,
                 )
+                self._remove_scene_objects(world)
+                self._start_scene_clock(world)
                 if self.ros_is_started:
                     self.update_topics()
 
@@ -845,6 +923,92 @@ class ProjectAirSimROSBridge:
                 self.logger.error(
                     f'Failed to load scene config file "{scene_config}": {e}'
                 )
+
+    def _remove_scene_objects(self, world):
+        """
+        Destroy the scene objects the profile asked to have removed.
+
+        The level a photorealistic environment ships is not the bare world a
+        stack's existing results were produced in, and its own props sit in
+        the flight path whether or not the experiment wanted them there.  A
+        profile can therefore name them, and they are removed once the scene
+        has loaded -- after it, because the scene's own spawned objects are
+        created as part of loading it and the removal must not race them.
+
+        A failure here is reported and does not abort the scene: the scene is
+        loaded by this point and is what connects Project AirSim to a flight
+        controller, so tearing it down over an unremoved prop would trade a
+        wrong world for no world at all.
+
+        Arguments:
+            world - The projectairsim.World for the scene just loaded
+        """
+        patterns = self.interface_profile.scene.remove_objects
+        if not patterns:
+            return
+
+        removed = 0
+        failed = []
+
+        for pattern in patterns:
+            try:
+                names = world.list_objects(pattern)
+            except Exception as exc:
+                failed.append(f"listing {pattern}: {exc}")
+                continue
+
+            for name in names:
+                try:
+                    world.destroy_object(name)
+                    removed += 1
+                except Exception as exc:
+                    failed.append(f"{name}: {exc}")
+
+        self.logger.info(
+            f"Removed {removed} scene object(s) matching "
+            f"{', '.join(patterns)}"
+        )
+        if failed:
+            self.logger.warning(
+                f"Could not remove {len(failed)} scene object(s): "
+                f"{'; '.join(failed[:5])}"
+                + (" ..." if len(failed) > 5 else "")
+            )
+
+    def _start_scene_clock(self, world):
+        """
+        Release the simulation clock once the scene has been prepared.
+
+        Changes to a scene have to be made before simulation time advances.
+        Project AirSim starts a robot the moment the scene loads, and the
+        world it starts in is whatever the level holds at that instant: if a
+        prop this profile is about to remove happens to occupy the spawn
+        point, the vehicle begins embedded in it, and the physics that follows
+        is about that collision rather than about the experiment. Removing the
+        prop half a second later does not undo it.
+
+        Such a scene therefore sets "pause-on-start": true and is released
+        here, after the changes above. The clock is started whenever the scene
+        comes up paused, including when this profile asked for no changes at
+        all, so that a paused scene is never simply left stopped.
+
+        Arguments:
+            world - The projectairsim.World for the scene just loaded
+        """
+        try:
+            if not world.is_paused():
+                return
+            world.resume()
+        except Exception as exc:
+            # Loud, because the scene is loaded and every other part of the
+            # stack will sit waiting on a clock that is never going to tick.
+            self.logger.error(
+                f"Scene is paused and could not be started: {exc}. "
+                "Simulation time will not advance."
+            )
+            return
+
+        self.logger.info("Scene prepared; simulation clock started.")
 
     def _on_ros_shutdown(self):
         """

@@ -228,7 +228,13 @@
       "parameters": {
         "NAV_RCL_ACT": 0,
         "NAV_DLL_ACT": 0,
-        "COM_OBL_ACT": 1,
+        // Offboard loss failsafe: hold. PX4 merged COM_OBL_ACT into
+        // COM_OBL_RC_ACT after v1.12, renumbering the actions on the way, so
+        // the other configs here -- which target v1.12 -- spell this as
+        // "COM_OBL_ACT": 1. On a PX4 that no longer has the old name, setting
+        // it is not ignored: the parameter is retried ten times and then
+        // throws, and PX4 never receives the sensor stream it is waiting for.
+        "COM_OBL_RC_ACT": 5,
         "LPE_LAT": 47.641468,
         "LPE_LON": -122.140165
       },
@@ -397,6 +403,52 @@
       "origin": {
         "xyz": "0.14 0.0 -0.21",
         "rpy-deg": "0 0 0"
+      }
+    },
+    {
+      // Chase camera: the third-person view in the Unreal window.
+      //
+      // The viewport follows the robot actor, and what it shows is the
+      // robot's active *streaming* capture. With none, Unreal falls back to
+      // the actor's own eye point (AUnrealRobot::CalcCamera), which looks
+      // like a nose camera and makes the vehicle impossible to see. This
+      // camera exists to be that streaming capture and nothing else.
+      //
+      // "capture-enabled": false is the point: streaming and capture are
+      // independent, so the viewport gets a pose to render from while no
+      // render target is captured, no images are published and no extra
+      // topic appears on the bridge. It therefore costs nothing in headless
+      // batches, where the viewport is not drawn at all.
+      "id": "Chase",
+      "type": "camera",
+      "enabled": true,
+      "parent-link": "Frame",
+      "capture-interval": 0.0333333,
+      "capture-settings": [
+        {
+          "image-type": 0,
+          "width": 1280,
+          "height": 720,
+          "fov-degrees": 90,
+          "capture-enabled": false,
+          "streaming-enabled": true,
+          "pixels-as-float": false,
+          "compress": false,
+          "target-gamma": 2.5
+        }
+      ],
+      // Keep the view level as the vehicle rolls and pitches, so the
+      // horizon does not tumble while watching a run.
+      "gimbal": {
+        "lock-roll": true,
+        "lock-pitch": true,
+        "lock-yaw": false
+      },
+      "origin": {
+        // 10 m behind and 1 m above the vehicle, pitched slightly down to
+        // put it in frame. Z is down, so above is negative.
+        "xyz": "-10.0 0.0 -1.0",
+        "rpy-deg": "0 -11.46 0"
       }
     },
     {

@@ -39,6 +39,7 @@ def test_bridge_launch_description_exposes_all_parameters():
         "takeoff_timeout_sec",
         "land_timeout_sec",
         "interface_profile",
+        "connect_timeout_sec",
         "use_sim_time",
     }
     assert len(nodes) == 1

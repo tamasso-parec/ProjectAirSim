@@ -65,6 +65,16 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "connect_timeout_sec",
+            default_value="60.0",
+            description=(
+                "How long the bridge keeps retrying a refused connection. "
+                "Unreal is started alongside it here and only opens its "
+                "ports once its map has loaded, so the bridge has to outwait "
+                "the simulator's cold start."
+            ),
+        ),
+        DeclareLaunchArgument(
             "use_sim_time",
             default_value="true",
             description=(
@@ -84,7 +94,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "scene_load_delay_sec",
             default_value="5.0",
-            description="Time allowed for the bridge to connect before loading the scene.",
+            description=(
+                "Head start given to Unreal and the bridge before the scene "
+                "is published. The bridge waits for the simulator on its own "
+                "and the publication waits for the bridge to subscribe, so "
+                "this only avoids a burst of retries on a cold start."
+            ),
         ),
         # ------------------------------------------------------------------
         # PX4 SITL
@@ -192,6 +207,7 @@ def generate_launch_description():
             ("services_port", LaunchConfiguration("services_port")),
             ("sim_config_path", LaunchConfiguration("sim_config_path")),
             ("interface_profile", LaunchConfiguration("interface_profile")),
+            ("connect_timeout_sec", LaunchConfiguration("connect_timeout_sec")),
             ("use_sim_time", LaunchConfiguration("use_sim_time")),
         ],
     )

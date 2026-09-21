@@ -550,11 +550,16 @@
     },
     "px4-params": {
       "type": "object",
-      "required": [ "NAV_RCL_ACT", "NAV_DLL_ACT", "COM_OBL_ACT", "LPE_LAT", "LPE_LON" ],
+      // COM_OBL_ACT is not required: PX4 merged it into COM_OBL_RC_ACT after
+      // v1.12, so a config for a newer PX4 sets the latter and requiring the
+      // former would reject it. Both are accepted, and which one is correct
+      // is a property of the PX4 the config is aimed at.
+      "required": [ "NAV_RCL_ACT", "NAV_DLL_ACT", "LPE_LAT", "LPE_LON" ],
       "properties": {
         "NAV_RCL_ACT": { "type": "number" },
         "NAV_DLL_ACT": { "type": "number" },
         "COM_OBL_ACT": { "type": "number" },
+        "COM_OBL_RC_ACT": { "type": "number" },
         "LPE_LAT": { "type": "number" },
         "LPE_LON": { "type": "number" }
       }

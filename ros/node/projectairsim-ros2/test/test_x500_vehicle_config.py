@@ -401,6 +401,115 @@ def test_the_scene_home_position_matches_the_px4_local_origin(
     assert home["longitude"] == pytest.approx(parameters["LPE_LON"])
 
 
+def test_the_offboard_loss_parameter_uses_the_name_this_px4_still_has(robot):
+    """
+    PX4 merged COM_OBL_ACT into COM_OBL_RC_ACT after v1.12, renumbering the
+    actions with it. This config targets the newer PX4, where setting the old
+    name is not ignored: Project AirSim retries the parameter ten times, then
+    throws out of sending parameters entirely, and PX4 sits in lock-step
+    waiting for a sensor stream that never starts. The log blames a parameter
+    name, so the symptom is easy to read past.
+    """
+    parameters = robot["controller"]["px4-settings"]["parameters"]
+
+    assert "COM_OBL_ACT" not in parameters, "the pre-v1.12 name"
+    # 5 is Hold, the renumbered equivalent of the old COM_OBL_ACT 1.
+    assert parameters["COM_OBL_RC_ACT"] == 5
+
+
+def test_the_wall_is_built_from_a_mesh_blocks_actually_ships(wall_scene):
+    """
+    Spawning resolves the asset by bare name against Unreal's asset registry,
+    and a packaged build's registry holds only what was cooked into it. Naming
+    a mesh that is not there fails the whole scene load, which in turn is what
+    connects Project AirSim to PX4, so the run dies well before the wall would
+    have mattered.
+    """
+    spawned = wall_scene["spawn-objects"]["sim-packaged"]
+    assets = {obj["asset-path"] for obj in spawned}
+
+    # Blocks cooks 1M_Cube and 1M_Cube_Chamfer, and no template cube.
+    assert assets <= {"1M_Cube", "1M_Cube_Chamfer"}, assets
+
+
+def test_the_wall_stands_where_the_gazebo_wall_stands(wall_scene):
+    """
+    The wall is the obstacle the planner is measured against, so its size and
+    distance decide the detour, the clearance and where the goal sits relative
+    to it. Getting them wrong does not fail a run -- it silently measures a
+    different problem than the Gazebo scenario of the same name.
+
+    From unseen_gz/unseen_gazebo/worlds/wall.sdf: model `wall` at pose
+    "10 0 0" with a box of size 0.5 x 10.0 x 10.0 m, in ENU.
+    """
+    wall = wall_scene["spawn-objects"]["sim-packaged"][0]
+
+    # Compared in the frame the stack sees, not the one the file is written
+    # in. 1M_Cube is a 1 m cube, so scale is the size in metres directly, and
+    # an extent is unsigned -- hence abs() on the negated axis.
+    scale = [float(value) for value in wall["scale"].split()]
+    east, north, up = (abs(value) for value in ned_to_enu(scale))
+    assert (east, north, up) == pytest.approx((0.5, 10.0, 10.0))
+
+    origin = [float(value) for value in wall["origin"]["xyz"].split()]
+    assert ned_to_enu(origin) == pytest.approx((10.0, 0.0, 0.0))
+
+    # Static scenery. Physics on it would let the vehicle push the obstacle
+    # it is supposed to avoid, as <static>true</static> prevents in Gazebo.
+    assert wall["physics-enabled"] is False
+
+
+@pytest.mark.parametrize("scene_name", [GROUND_SCENE, WALL_SCENE])
+def test_the_vehicle_starts_on_the_heading_the_gazebo_model_does(scene_name):
+    """
+    The Gazebo model spawns at ENU yaw 0, nose along ROS +X, and the stack is
+    built around that: the goal is published at x = 12 and the PX4 adapter's
+    ned_yaw_offset assumes it. A scene written in NED that says yaw 0 points
+    the vehicle north instead, 90 degrees off, and the run then flies a
+    different course through a differently placed world.
+    """
+    scene = load_scene(scene_name)
+    roll, pitch, yaw = (
+        float(value) for value in scene["actors"][0]["origin"]["rpy-deg"].split()
+    )
+
+    assert (roll, pitch) == pytest.approx((0.0, 0.0))
+    # NED yaw 90 (east) is ROS ENU yaw 0, which is where Gazebo starts.
+    assert yaw == pytest.approx(90.0)
+
+
+def test_the_chase_camera_streams_without_capturing(robot):
+    """
+    The Unreal window follows the robot and renders from its active streaming
+    capture; with none, AUnrealRobot::CalcCamera falls back to the actor's own
+    eye point, which looks like a nose camera. This camera exists to be that
+    streaming capture. Capture stays off so that watching a run costs no
+    render target, publishes no images and adds no bridged topic -- and so
+    that a headless batch, where the window is never drawn, pays nothing.
+    """
+    cameras = {
+        sensor["id"]: sensor
+        for sensor in robot["sensors"]
+        if sensor["type"] == "camera"
+    }
+    chase = cameras["Chase"]
+    settings = chase["capture-settings"]
+
+    assert len(settings) == 1
+    assert settings[0]["streaming-enabled"] is True
+    assert settings[0]["capture-enabled"] is False
+
+    # Behind and above the vehicle, or it is not a third-person view. X is
+    # forward and Z is down, so behind is negative X and above negative Z.
+    x, y, z = (float(value) for value in chase["origin"]["xyz"].split())
+    assert x < -1.0 and z < 0.0
+
+    # The sensor that does produce data must not stream, or it would compete
+    # for the viewport and cycle the view away from the chase camera.
+    for image in cameras["RGBD"]["capture-settings"]:
+        assert image["streaming-enabled"] is False
+
+
 # ---------------------------------------------------------------------------
 # Simulation clock
 # ---------------------------------------------------------------------------
@@ -417,7 +526,56 @@ def test_scenes_use_a_steppable_clock_fast_enough_for_px4(scene_name):
     assert clock["type"] == "steppable"
     step_hz = 1e9 / clock["step-ns"]
     assert step_hz >= 250.0
-    assert clock["pause-on-start"] is False
+
+
+# How far the /Drone/Quadrotor1 collision hull reaches below the body origin,
+# measured from where Project AirSim's own scene_basic_drone comes to rest:
+# spawned at 4 m, it settles with its origin 1.193 m above the ground.
+MESH_COLLISION_REACH_M = 1.193
+
+
+@pytest.mark.parametrize("scene_name", [GROUND_SCENE, WALL_SCENE])
+def test_the_vehicle_spawns_clear_of_its_own_collision_hull(scene_name):
+    """
+    Collision geometry comes from the visual mesh and cannot be overridden --
+    a link's "collision" block carries only restitution, friction and enabled.
+    That hull reaches about 1.19 m below the body origin, so the Gazebo spawn
+    height of 0.3 m would start the vehicle 0.9 m inside the ground.
+
+    That is not a near miss. Unreal answers an already-penetrating body with a
+    depenetration direction rather than a surface normal, and for a box whose
+    smallest overlap is sideways that direction is horizontal. Fast physics
+    only clamps on a vertical normal (IsLandingCollision), so the vehicle is
+    never landed, sinks further, and falls without end -- measured at 0.3 m,
+    -3.11 m, -8.99 m, -20.69 m on one run.
+
+    Matching Gazebo's 0.3 m here is therefore not the conservative choice; it
+    is the one that breaks the run.
+    """
+    spawn_height = -float(
+        load_scene(scene_name)["actors"][0]["origin"]["xyz"].split()[2]
+    )
+
+    assert spawn_height > MESH_COLLISION_REACH_M
+
+
+@pytest.mark.parametrize("scene_name", [GROUND_SCENE, WALL_SCENE])
+def test_scenes_start_paused_so_the_bridge_can_prepare_them(scene_name):
+    """
+    A robot exists from the instant the scene loads, in whatever the level
+    holds at that instant. Blocks puts a cube across the world origin, so a
+    vehicle spawned there begins embedded in geometry, and the contact normal
+    it reports is the cube's side face -- horizontal. Project AirSim's fast
+    physics only clamps a body to a surface on a vertical normal
+    (IsLandingCollision), so the vehicle is never landed and falls without
+    end. Removing the cube half a second later does not give back the half
+    second.
+
+    Starting paused lets the bridge apply the profile's scene changes first;
+    it then starts the clock. Nothing else may pause these scenes, because
+    the bridge is what resumes them.
+    """
+    assert load_scene(scene_name)["clock"]["pause-on-start"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -425,10 +583,35 @@ def test_scenes_use_a_steppable_clock_fast_enough_for_px4(scene_name):
 # ---------------------------------------------------------------------------
 
 
+def ned_to_enu(xyz):
+    """
+    The world conversion the interface profile selects (REP 103 ENU).
+
+    Project AirSim scenes are NED: X north, Y east, Z down. The bridge
+    publishes ROS ENU: X east, Y north, Z up. Comparing a scene pose against
+    a Gazebo pose or a goal without this is comparing different axes, which
+    is exactly how a wall ends up beside the route instead of across it.
+    """
+    north, east, down = xyz
+    return (east, north, -down)
+
+
 def camera(robot):
+    """
+    The camera that produces data. The Chase camera alongside it streams to
+    the Unreal window and captures nothing, so it is not a second sensor as
+    far as anything downstream is concerned -- and there must not be a third.
+    """
     cameras = [s for s in robot["sensors"] if s["type"] == "camera"]
-    assert len(cameras) == 1
-    return cameras[0]
+    capturing = [
+        sensor
+        for sensor in cameras
+        if any(image["capture-enabled"] for image in sensor["capture-settings"])
+    ]
+
+    assert len(capturing) == 1
+    assert capturing[0]["id"] == "RGBD"
+    return capturing[0]
 
 
 def capture(robot, image_type):
@@ -543,26 +726,31 @@ def test_the_wall_scene_spawns_one_obstacle(wall_scene):
 
 def test_the_wall_stands_between_the_vehicle_and_the_goal(wall_scene):
     """
-    The planner scenarios fly to roughly 12 m ahead, so an obstacle that is
-    not in the way makes the scenario meaningless.
+    The planner scenarios publish a goal at x = 12 in the ROS frame, so the
+    wall has to cross that route. Checking it in the scene's own NED axes
+    would pass just as happily with the wall 10 m to the side, because
+    Project AirSim X is ROS Y once the profile's ENU conversion is applied.
     """
     wall = wall_scene["spawn-objects"]["sim-packaged"][0]
-    wall_x, wall_y, wall_z = (
-        float(value) for value in wall["origin"]["xyz"].split()
+    wall_east, wall_north, wall_up = ned_to_enu(
+        [float(value) for value in wall["origin"]["xyz"].split()]
     )
     thickness, width, height = (
-        float(value) for value in wall["scale"].split()
+        abs(value)
+        for value in ned_to_enu([float(v) for v in wall["scale"].split()])
     )
-    vehicle_x = float(
-        wall_scene["actors"][0]["origin"]["xyz"].split()[0]
+    vehicle_east, _, _ = ned_to_enu(
+        [float(value) for value in wall_scene["actors"][0]["origin"]["xyz"].split()]
     )
 
-    assert vehicle_x < wall_x < 12.0
+    # Between the vehicle and the goal, along the axis the goal is given on.
+    assert vehicle_east < wall_east < 12.0
     # Wide and tall enough that the goal cannot be reached by skirting it at
     # the altitudes the planner is allowed to use.
     assert width >= 6.0
-    assert height >= 4.0
     assert thickness > 0.0
-    # Centred on its own half-height so the slab rests on the ground.
-    assert wall_z == pytest.approx(-height / 2)
-    assert wall_y == pytest.approx(0.0)
+    # Centred on the ground plane rather than resting on it, as the Gazebo
+    # model's pose does, so half the slab is buried and the rest stands.
+    assert wall_up == pytest.approx(0.0)
+    assert height / 2 >= 4.0, "the standing half has to be worth flying around"
+    assert wall_north == pytest.approx(0.0)

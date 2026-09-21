@@ -96,6 +96,7 @@ ros2 service call $ROBOT_PATH/arm std_srvs/srv/SetBool '{data: false}'
 | `services_port` | integer | `8990` | Service port. |
 | `sim_config_path` | string | `sim_config/` | Directory holding scene configuration files. |
 | `interface_profile` | string | `""` | Path to an [interface profile](#interface-profiles). Empty keeps the bridge's default naming. |
+| `connect_timeout_sec` | double | `60.0` | How long to keep retrying a refused connection while the simulator is still starting. `0` makes a single attempt. |
 | `use_sim_time` | bool | `false` | Publish `/clock` from the simulation clock and stamp messages with it. See [Simulated time](#simulated-time). |
 | `cmd_vel_timeout_sec` | double | `1.0` | Duration of each velocity request and motion failsafe. Publish faster than this. |
 | `takeoff_timeout_sec` | double | `20.0` | Takeoff service timeout. |
@@ -189,6 +190,24 @@ Two consequences:
 - **Loading a new scene restarts the clock at zero.** The bridge resets its clock source on a scene load, so the new scene's timestamps are accepted rather than rejected as stale. A large backwards jump is logged.
 
 `/clock` is published reliably with depth one, rate-limited by `sim_time.min_step_ms` (1 ms, so at most 1 kHz) however fast the simulator steps.
+
+### Clearing the environment's own props
+
+A photorealistic environment is a level somebody built, and it arrives with everything that level contains. Unreal's Blocks template, for instance, scatters around 160 cubes over the ground. The world an existing stack's results were produced in is usually barer, because a Gazebo world holds exactly the models the experiment asked for.
+
+Leaving the level's props in place is not a neutral choice. They are obstacles the other simulator's runs never had to fly through, so path lengths, collision counts and planner failures measured against them answer a different question.
+
+```yaml
+scene:
+  remove_objects:
+    - "TemplateCube_Rounded.*"
+```
+
+Each entry is a regular expression matched against scene object names, and matching objects are destroyed after the scene loads — including actors placed in the level rather than spawned by the scene config. Removal happens *after* loading because a scene's own spawned objects are created as part of loading it, so anything the scene itself places is already there and is matched on its own name.
+
+An object that cannot be destroyed is reported and skipped rather than failing the load: by that point the scene is what connects Project AirSim to the flight controller, and giving up on it over one prop would trade a slightly wrong world for no world.
+
+**Give the scene `"pause-on-start": true`.** A robot exists from the instant the scene loads, in whatever the level holds at that instant, and the removal is a round trip per object afterwards. In Blocks that half second is enough for a vehicle spawned on top of one of the level's cubes to start its run embedded in it: the contact normal is the cube's side face, Project AirSim's fast physics only clamps a body to a surface on a vertical normal, and the vehicle therefore never lands and falls without end. Removing the cube afterwards does not give the half second back. Loaded paused, the scene is prepared before any time passes, and the bridge starts the clock once it is done -- including when the profile asked for no changes, so a paused scene is never simply left stopped.
 
 ### Depth images and point clouds
 
@@ -531,6 +550,7 @@ Note that `cmd_vel` is a **world-frame** request here, not body-frame as many RO
 | `tf.publish_robot_tf` | `true` | Broadcast the vehicle frame on `/tf`. |
 | `tf.publish_sensor_tf` | `true` | Broadcast sensor frames on `/tf`. |
 | `tf.ground_truth_topic` | `""` | Publish ground-truth transforms here instead of `/tf`. |
+| `scene.remove_objects` | — | Regular expressions; matching scene objects are destroyed once the scene loads. |
 | `frames` | — | Glob pattern to transform frame ID. |
 | `topics` | — | Glob pattern to ROS topic name, or a camera mapping. |
 

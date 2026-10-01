@@ -512,6 +512,7 @@ class TopicsManagers:
         logger: logging.Logger,
         sim_time=None,
         coords=None,
+        sensor_qos_profile: str = "sensor_data",
     ):
         """
         Constructor.
@@ -524,6 +525,12 @@ class TopicsManagers:
                 disabled source is created and the ROS wall clock is used
             coords - CoordinateConverter shared by every topic handler; if
                 None, the process-wide default is used
+            sensor_qos_profile - Semantic QoS profile every sensor-rate
+                publisher uses: "sensor_data" (best effort, the default) or
+                "default" (reliable).  A stack built against a bridge that
+                publishes reliably subscribes reliably, and a best-effort
+                publisher cannot satisfy it -- DDS refuses the match and no
+                messages flow at all.
         """
         self.logger = logger
         self.projectairsim_topics_manager = ProjectAirSimTopicsManager(
@@ -540,6 +547,7 @@ class TopicsManagers:
             if coords is not None
             else utils.get_default_coordinate_converter()
         )
+        self.sensor_qos_profile = sensor_qos_profile
         self.ros_topics_manager = ROSTopicsManager(ros_node, logger)
         self.tf_broadcaster = TFBroadcaster(ros_node, logger, self.sim_time)
         self._request_lock = threading.RLock()
@@ -778,7 +786,7 @@ class BasicBridgeToROS:
         message_callback,
         ros_topic_name: str = None,
         ros_topic_is_latching: bool = True,
-        ros_qos_profile: str = "sensor_data",
+        ros_qos_profile: str = None,
     ):
         """
         Constructor.
@@ -792,7 +800,8 @@ class BasicBridgeToROS:
             message_callback - Message handler callback function
             ros_topic_name - Name of the ROS topic if different from projectairsim_topic_name
             ros_topic_is_latching - If true, new subscribers of the ROS topic receive the last message published
-            ros_qos_profile - Semantic QoS profile used by ROS2 publishers
+            ros_qos_profile - Semantic QoS profile used by ROS2 publishers,
+                or None to take the one the profile configured
         """
         if not callable(message_callback):
             raise TypeError(f"message_callback is not callable: {message_callback}")
@@ -817,7 +826,11 @@ class BasicBridgeToROS:
             topic_name=ros_topic_name,
             ros_message_type=ros_message_type,
             is_latching=ros_topic_is_latching,
-            qos_profile=ros_qos_profile,
+            qos_profile=(
+                ros_qos_profile
+                if ros_qos_profile is not None
+                else topics_managers.sensor_qos_profile
+            ),
             peer_change_callback=self._auto_subscriber.peer_change_cb,
         )
 
@@ -1511,7 +1524,7 @@ class CameraBridgeToROS(BasicBridgeToROS):
                 ros_message_type=rossensmsg.PointCloud2,
                 peer_change_callback=self._auto_subscriber.peer_change_cb,
                 is_latching=False,
-                qos_profile="sensor_data",
+                qos_profile=topics_managers.sensor_qos_profile,
             )
             # Reprojection needs the camera intrinsics, so the camera info
             # subscription can no longer wait for a ROS subscriber of its own.
@@ -1659,6 +1672,7 @@ class CameraBridgeToROS(BasicBridgeToROS):
             self.camera_info.k,
             self.frame_id,
             self.points_settings,
+            self.projectairsim_topic_name,
         )
         if point_cloud is not None:
             self.topics_managers.ros_topics_manager.publish(
@@ -2037,7 +2051,7 @@ class RobotPoseBridgeToROS(BasicBridgeToROS):
                 ros_message_type=rostf2msg.TFMessage,
                 peer_change_callback=self._ros_topic_peer_change_cb,
                 is_latching=False,
-                qos_profile="sensor_data",
+                qos_profile=topics_managers.sensor_qos_profile,
             )
 
         # Subscribe to the Project AirSim topic now.  The robot pose is the

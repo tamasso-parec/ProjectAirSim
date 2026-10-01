@@ -104,6 +104,13 @@ class TFSettings:
 class PointCloudSettings:
     """
     Depth-image-to-point-cloud settings from an interface profile.
+
+    ``color`` adds an ``rgb`` field taken from the colour image of the same
+    camera.  A Gazebo RGB-D sensor produces a coloured cloud, so a stack
+    standing in for one inherits consumers that expect the field -- RViz's
+    default point cloud display colours by ``RGB8`` and renders nothing
+    without it.  It is off by default because adding a field changes the
+    message layout for anyone not asking for it.
     """
 
     # X right, Y down, Z forward: the optical convention of REP 103, and what
@@ -116,7 +123,7 @@ class PointCloudSettings:
 
     CONVENTIONS = (CONVENTION_OPTICAL, CONVENTION_ROS)
 
-    def __init__(self, frame_convention=CONVENTION_OPTICAL, decimation=1):
+    def __init__(self, frame_convention=CONVENTION_OPTICAL, decimation=1, color=False):
         frame_convention = str(frame_convention).lower()
         if frame_convention not in self.CONVENTIONS:
             raise ProfileError(
@@ -129,6 +136,7 @@ class PointCloudSettings:
 
         self.frame_convention = frame_convention
         self.decimation = decimation
+        self.color = bool(color)
 
     @property
     def is_optical(self) -> bool:
@@ -223,6 +231,54 @@ class SceneSettings:
         return bool(self.remove_objects)
 
 
+class QoSSettings:
+    """
+    Reliability the bridge publishes sensor topics with.
+
+    ROS offers no single right answer here, so it is a property of the
+    interface being reproduced rather than of the data.  A driver on real
+    hardware publishes camera frames best effort, and the bridge's own default
+    follows that.  ``ros_gz_bridge`` does not: it publishes reliably, so a
+    stack built against Gazebo has its subscribers, RViz configurations and
+    recording setups asking for reliable delivery.
+
+    The mismatch is not a degradation -- it is silence.  A best-effort
+    publisher cannot satisfy a reliable subscriber, so DDS refuses the match
+    outright and the bridge reports:
+
+        New subscription discovered on topic '/rgbd_camera/points',
+        requesting incompatible QoS. No messages will be sent to it.
+
+    Set ``sensor_reliability: reliable`` to stand in for a simulator whose
+    bridge publishes reliably.
+    """
+
+    BEST_EFFORT = "best_effort"
+    RELIABLE = "reliable"
+
+    RELIABILITIES = (BEST_EFFORT, RELIABLE)
+
+    def __init__(self, sensor_reliability=BEST_EFFORT):
+        sensor_reliability = str(sensor_reliability).lower()
+        if sensor_reliability not in self.RELIABILITIES:
+            raise ProfileError(
+                f'unknown qos.sensor_reliability "{sensor_reliability}", '
+                f"expected one of {', '.join(self.RELIABILITIES)}"
+            )
+        self.sensor_reliability = sensor_reliability
+
+    @property
+    def sensor_profile_name(self) -> str:
+        """
+        The semantic profile name the ROS node layer understands.
+
+        "sensor_data" is best effort; "default" is reliable and volatile.
+        """
+        if self.sensor_reliability == self.RELIABLE:
+            return "default"
+        return "sensor_data"
+
+
 class CameraTopicNames:
     """
     Resolved ROS topic names for one Project AirSim camera image type.
@@ -270,6 +326,7 @@ class InterfaceProfile:
             "frames",
             "topics",
             "scene",
+            "qos",
         }
     )
 
@@ -318,6 +375,7 @@ class InterfaceProfile:
             )
             self.tf = TFSettings(**self._section(config, "tf"))
             self.scene = SceneSettings(**self._section(config, "scene"))
+            self.qos = QoSSettings(**self._section(config, "qos"))
         except TypeError as exc:
             # Raised when a section carries an unexpected key.
             raise ProfileError(f"{source}: {exc}") from exc

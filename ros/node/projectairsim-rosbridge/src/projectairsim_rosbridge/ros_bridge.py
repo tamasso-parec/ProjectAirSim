@@ -179,8 +179,9 @@ class ProjectAirSimROSBridge:
     HANDLER_PREFIX_PERSISTENT = "//./"
 
     # Project AirSim camera image types that carry depth, and so are the only
-    # ones a point cloud can be reprojected from.
-    DEPTH_IMAGE_TYPE_SUFFIXES = ("/depth_planar_camera", "/depth_camera")
+    # ones a point cloud can be reprojected from. Defined by the converter,
+    # which also uses them to find a depth image's colour sibling; one list.
+    DEPTH_IMAGE_TYPE_SUFFIXES = MsgConverter.DEPTH_IMAGE_SUFFIXES
 
     # How long to keep retrying a refused connection to Project AirSim, and
     # how long to wait between attempts.  See _connect_client() for why the
@@ -498,6 +499,7 @@ class ProjectAirSimROSBridge:
             self.logger,
             sim_time=self.sim_time,
             coords=self.coords,
+            sensor_qos_profile=self.interface_profile.qos.sensor_profile_name,
         )
 
         # Register ROS shutdown hook

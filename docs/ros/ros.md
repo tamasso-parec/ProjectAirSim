@@ -191,6 +191,39 @@ Two consequences:
 
 `/clock` is published reliably with depth one, rate-limited by `sim_time.min_step_ms` (1 ms, so at most 1 kHz) however fast the simulator steps.
 
+### Colouring the cloud
+
+A Gazebo RGB-D sensor publishes a coloured cloud, so a stack standing in for one inherits consumers that expect the field. RViz's point cloud display defaults to `Color Transformer: RGB8` and draws **nothing** without it, which reads as missing data rather than missing colour.
+
+```yaml
+points:
+  color: true
+```
+
+The colour comes from the same camera's `scene_camera` capture. Project AirSim splits one capture across two topics, so the bridge keeps the newest colour frame per camera and pairs it with that camera's depth image — one frame, not a queue, since stale colour on current geometry is worse than none. Decimation samples both the same way, and the `rgb` field follows the PointCloud2 convention of a `FLOAT32` whose bits are `0x00RRGGBB`.
+
+Both captures must have the same width and height; the bridge does not resample, because that would be a silent guess about registration. A mismatch is reported once per camera and the cloud is published uncoloured rather than dropped. The same applies before the first colour frame arrives.
+
+### Matching the other bridge's reliability
+
+A camera driver on real hardware publishes best effort, and that is the bridge's default. `ros_gz_bridge` publishes **reliably**, so a stack built against Gazebo has its subscribers, RViz configurations and recording setups asking for reliable delivery.
+
+The mismatch is not a degradation, it is silence. DDS will not pair a best-effort publisher with a reliable subscriber, so nothing at all is delivered and the bridge reports it once per subscription:
+
+```
+New subscription discovered on topic '/rgbd_camera/points',
+requesting incompatible QoS. No messages will be sent to it.
+```
+
+The topic still lists and still shows a publisher, and `ros2 topic hz` from a shell that subscribes best effort still reports a healthy rate, so it reads as a rendering fault rather than a delivery one.
+
+```yaml
+qos:
+  sensor_reliability: reliable
+```
+
+This covers camera images, depth images, reprojected point clouds and the ground-truth transform topic. Reliable delivery of multi-megabyte clouds leans on the DDS transport, so if large messages stall, raise the participant's buffer sizes rather than going back to best effort.
+
 ### Clearing the environment's own props
 
 A photorealistic environment is a level somebody built, and it arrives with everything that level contains. Unreal's Blocks template, for instance, scatters around 160 cubes over the ground. The world an existing stack's results were produced in is usually barer, because a Gazebo world holds exactly the models the experiment asked for.
@@ -546,10 +579,12 @@ Note that `cmd_vel` is a **world-frame** request here, not body-frame as many RO
 | `depth.mono8_max_range_m` | `6.0` | Range mapping to 255, `mono8` only. |
 | `points.frame_convention` | `optical` | `optical` (X right, Y down, Z forward) or `ros`. |
 | `points.decimation` | `1` | Keep every Nth pixel per axis. |
+| `points.color` | `false` | Add an `rgb` field from the same camera's colour image. |
 | `collision.message` | `none` | `none` or `gz_contacts`. |
 | `tf.publish_robot_tf` | `true` | Broadcast the vehicle frame on `/tf`. |
 | `tf.publish_sensor_tf` | `true` | Broadcast sensor frames on `/tf`. |
 | `tf.ground_truth_topic` | `""` | Publish ground-truth transforms here instead of `/tf`. |
+| `qos.sensor_reliability` | `best_effort` | Reliability for sensor-rate publishers: `best_effort`, or `reliable` to match a bridge such as `ros_gz_bridge`. |
 | `scene.remove_objects` | — | Regular expressions; matching scene objects are destroyed once the scene loads. |
 | `frames` | — | Glob pattern to transform frame ID. |
 | `topics` | — | Glob pattern to ROS topic name, or a camera mapping. |

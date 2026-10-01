@@ -120,6 +120,9 @@ class FakeTopicsManagers:
         self.tf_broadcaster = FakeTFBroadcaster()
         self.sim_time = None
         self.coords = utils.CoordinateConverter()
+        # The real managers carry the profile's resolved sensor QoS; handlers
+        # read it when advertising, so the double has to offer it too.
+        self.sensor_qos_profile = "sensor_data"
 
 
 def pose_message(*args):
@@ -246,8 +249,9 @@ def make_camera_handler(points_topic=None, points_callback=None):
     managers = FakeTopicsManagers()
     calls = []
 
-    def record_points(message, intrinsics, frame_id, settings):
-        calls.append((message, tuple(intrinsics), frame_id, settings))
+    def record_points(message, intrinsics, frame_id, settings, topic_name=None):
+        # topic_name is how the converter finds this camera's colour image.
+        calls.append((message, tuple(intrinsics), frame_id, settings, topic_name))
         return PointCloud2()
 
     handler = CameraBridgeToROS(
@@ -307,7 +311,9 @@ def test_points_are_published_once_someone_subscribes():
     handler._projectairsim_topic_update_cb(FakeTopic(DEPTH_TOPIC), depth_message())
 
     assert len(calls) == 1
-    _, intrinsics, frame_id, settings = calls[0]
+    _, intrinsics, frame_id, settings, topic_name = calls[0]
+    # The converter needs the depth topic to locate this camera's colour image.
+    assert topic_name == DEPTH_TOPIC
     assert frame_id == "camera_optical"
     assert intrinsics == tuple(handler.camera_info.k)
     assert isinstance(settings, PointCloudSettings)

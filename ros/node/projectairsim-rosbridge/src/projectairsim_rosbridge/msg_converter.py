@@ -15,6 +15,8 @@ import std_msgs.msg as rosstdmsg
 
 import numpy as np
 
+from projectairsim.utils import projectairsim_log
+
 from . import utils
 from .interface_profile import DepthSettings
 from .node import ROSNode
@@ -64,6 +66,9 @@ class MsgConverter:
             depth - Depth image conversion settings; if None, defaults apply
         """
         self.ros_node = ros_node  # ROS node
+        # Newest colour frame per camera, for colouring that camera's cloud.
+        self._color_frames = {}
+        self._color_size_warnings = set()
         self.sim_time = (
             sim_time if sim_time is not None else SimTimeSource(ros_node, enabled=False)
         )
@@ -321,7 +326,75 @@ class MsgConverter:
         image.data = self._as_ros_bytes(projectairsim_image_bgr8["data"])
         image.step = 3 * image.width
 
+        self._remember_color_frame(projectairsim_topic_name, projectairsim_image_bgr8)
+
         return image
+
+    # Project AirSim publishes a camera's colour and depth images as separate
+    # topics from one capture, so the colour a point cloud needs arrives on a
+    # different handler.  The newest frame per camera is kept here for the
+    # reprojection to pick up; it is one frame, not a queue, because a stale
+    # colour smeared onto current geometry is worse than no colour at all.
+    COLOR_IMAGE_SUFFIX = "/scene_camera"
+
+    # Project AirSim camera image types that carry depth, and so are the only
+    # ones a point cloud can be reprojected from.
+    DEPTH_IMAGE_SUFFIXES = ("/depth_planar_camera", "/depth_camera")
+
+    @staticmethod
+    def _camera_path(projectairsim_topic_name, suffix):
+        """The camera a topic belongs to, or None if it is not that topic."""
+        if not projectairsim_topic_name:
+            return None
+        if not projectairsim_topic_name.endswith(suffix):
+            return None
+        return projectairsim_topic_name[: -len(suffix)]
+
+    def _remember_color_frame(self, projectairsim_topic_name, projectairsim_image):
+        camera = self._camera_path(projectairsim_topic_name, self.COLOR_IMAGE_SUFFIX)
+        if camera is None:
+            return
+        self._color_frames[camera] = projectairsim_image
+
+    def _color_for_depth(self, projectairsim_topic_name, rows, columns, step):
+        """
+        The colour samples matching a depth image, as (rows, columns, 3) BGR.
+
+        Returns None when there is no colour frame for this camera yet, or
+        when its resolution differs from the depth image's.  Mismatched
+        resolutions could be resampled, but a guess about registration is not
+        worth making silently: an uncoloured cloud is honest, a wrongly
+        coloured one is not.
+        """
+        for suffix in self.DEPTH_IMAGE_SUFFIXES:
+            camera = self._camera_path(projectairsim_topic_name, suffix)
+            if camera is not None:
+                break
+        else:
+            return None
+
+        color = self._color_frames.get(camera)
+        if color is None:
+            return None
+
+        color_rows = int(color["height"])
+        color_columns = int(color["width"])
+        if color_rows != rows * step or color_columns != columns * step:
+            if camera not in self._color_size_warnings:
+                self._color_size_warnings.add(camera)
+                projectairsim_log().warning(
+                    f"Colour image for {camera} is "
+                    f"{color_columns}x{color_rows} but its depth image is "
+                    f"{columns * step}x{rows * step}; publishing the point "
+                    "cloud without colour. Give both captures the same "
+                    "width and height to colour it."
+                )
+            return None
+
+        bgr = np.frombuffer(color["data"], dtype=np.uint8).reshape(
+            color_rows, color_columns, 3
+        )
+        return bgr[::step, ::step, :]
 
     def convert_image_16uc1_to_ros(
         self, projectairsim_topic_name, projectairsim_image_16uc1
@@ -454,6 +527,7 @@ class MsgConverter:
         intrinsic_camera_matrix,
         frame_id,
         points_settings,
+        projectairsim_topic_name=None,
     ):
         """
         Reproject a Project AirSim depth image into a ROS PointCloud2.
@@ -474,8 +548,10 @@ class MsgConverter:
             intrinsic_camera_matrix - Row-major 3x3 camera matrix, as in
                 CameraInfo.k
             frame_id - Transform frame the points are expressed in
-            points_settings - PointCloudSettings controlling axis convention
-                and decimation
+            points_settings - PointCloudSettings controlling axis convention,
+                decimation and colour
+            projectairsim_topic_name - The depth topic, used to find the
+                colour image of the same camera when colour is enabled
 
         Returns:
             (return) - Corresponding ROS PointCloud2 message, or None when the
@@ -516,7 +592,14 @@ class MsgConverter:
         right = valid_depth * u[np.newaxis, :]
         down = valid_depth * v[:, np.newaxis]
 
-        cloud = np.empty((rows, columns, 3), dtype="<f4")
+        bgr = None
+        if points_settings.color:
+            bgr = self._color_for_depth(
+                projectairsim_topic_name, rows, columns, step
+            )
+
+        channels = 4 if bgr is not None else 3
+        cloud = np.empty((rows, columns, channels), dtype="<f4")
         if points_settings.is_optical:
             # Optical frame: X right, Y down, Z forward.
             cloud[..., 0] = right
@@ -528,23 +611,36 @@ class MsgConverter:
             cloud[..., 1] = -right
             cloud[..., 2] = -down
 
+        if bgr is not None:
+            # PointCloud2 carries colour as one FLOAT32 whose bits are
+            # 0x00RRGGBB -- a convention, not a number, so the packed integer
+            # is reinterpreted rather than converted. The source is bgr8, so
+            # the channels are read back to front.
+            packed = (
+                (bgr[..., 2].astype("<u4") << 16)
+                | (bgr[..., 1].astype("<u4") << 8)
+                | bgr[..., 0].astype("<u4")
+            )
+            cloud[..., 3] = packed.view("<f4")
+
         point_cloud = rossensmsg.PointCloud2()
         point_cloud.header.stamp = self.sim_time.stamp(projectairsim_image_16uc1)
         point_cloud.header.frame_id = frame_id
         point_cloud.height = rows
         point_cloud.width = columns
+        field_names = ("x", "y", "z", "rgb") if bgr is not None else ("x", "y", "z")
         point_cloud.fields = [
             rossensmsg.PointField(
                 name=name,
-                offset=offset,
+                offset=4 * index,
                 datatype=rossensmsg.PointField.FLOAT32,
                 count=1,
             )
-            for name, offset in (("x", 0), ("y", 4), ("z", 8))
+            for index, name in enumerate(field_names)
         ]
         point_cloud.is_bigendian = False
-        point_cloud.point_step = 12
-        point_cloud.row_step = 12 * columns
+        point_cloud.point_step = 4 * len(field_names)
+        point_cloud.row_step = point_cloud.point_step * columns
         point_cloud.data = self._as_ros_bytes(cloud.tobytes())
         # Invalid pixels are retained as NaN to keep the cloud organised.
         point_cloud.is_dense = False

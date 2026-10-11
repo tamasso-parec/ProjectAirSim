@@ -161,6 +161,14 @@ if(WIN32)
 else()
     set(ASSIMP_LIBRARY_SUFFIX_OVERRIDE "")
 endif()
+# ExternalProject does not inherit the parent's compile options.
+# Host builds must select libc++; the Unreal toolchain already supplies its
+# libc++ headers with -nostdinc++. Adding -stdlib there triggers an unused
+# argument warning, which Assimp treats as an error.
+set(ASSIMP_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT DEFINED ENV{UE_ROOT})
+    string(APPEND ASSIMP_CXX_FLAGS " -stdlib=libc++")
+endif()
 ExternalProject_Add(assimp-external
     GIT_REPOSITORY          https://github.com/assimp/assimp.git
     GIT_TAG                 v5.2.5
@@ -178,7 +186,7 @@ ExternalProject_Add(assimp-external
         -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=${CMAKE_FIND_ROOT_PATH_MODE_PACKAGE}
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-        -DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}
+        "-DCMAKE_CXX_FLAGS:STRING=${ASSIMP_CXX_FLAGS}"
         -DCMAKE_POSITION_INDEPENDENT_CODE=True
         -DBUILD_SHARED_LIBS=OFF
         -DASSIMP_BUILD_ZLIB=ON  # force build of assimp's packaged zlib in case it detects it existing in a python environment

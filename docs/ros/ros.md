@@ -242,6 +242,30 @@ An object that cannot be destroyed is reported and skipped rather than failing t
 
 **Give the scene `"pause-on-start": true`.** A robot exists from the instant the scene loads, in whatever the level holds at that instant, and the removal is a round trip per object afterwards. In Blocks that half second is enough for a vehicle spawned on top of one of the level's cubes to start its run embedded in it: the contact normal is the cube's side face, Project AirSim's fast physics only clamps a body to a surface on a vertical normal, and the vehicle therefore never lands and falls without end. Removing the cube afterwards does not give the half second back. Loaded paused, the scene is prepared before any time passes, and the bridge starts the clock once it is done -- including when the profile asked for no changes, so a paused scene is never simply left stopped.
 
+### Texturing scene objects
+
+A scene rebuilt from primitives inside a template level gives the camera grey shapes to look at. That says little about how a feature tracker or a perception-aware planner would fare in a real environment, so the profile can also dress the scene with photographs:
+
+```yaml
+scene:
+  textures:
+    directory: "$UNSEEN_THIRDPARTY_PACKAGES_DIR/textures"   # env vars and ~ expand
+    seed: 0
+    rules:
+      - objects: "obstacle_.*"            # full-match regex, like remove_objects
+        files: "bark/*_Color.png"         # glob under directory
+      - objects: "ground_tile_[0-9]+_[0-9]+"
+        files: "ground/*_Color.png"
+```
+
+Each matching object gets one image from its rule's files as base colour (`SetObjectTextureFromFile`). The image is chosen by hashing `seed` and the object name, so a world looks the same on every run, whatever order objects are listed in; change `seed` to vary it.
+
+Textures are applied right after `remove_objects` and, like it, before the clock is released, so the vehicle never sees the world change. A rule whose glob matches no file, or an object that cannot be textured, is reported and skipped; it never fails the scene load. Applying a texture is a round trip per object (roughly 35 ms for a 1024 px PNG), so texturing ~900 objects adds about half a minute to the load.
+
+The runtime swap stretches one image over a mesh's UV map; it does not tile. Texture small objects (or tile large surfaces with small objects, as UNSEEN's scene generator does for the ground), not a level's floor: a single image stretched over a whole map renders as one flat colour.
+
+**Why the bridge does this, not a separate client.** While a second client is connected to Project AirSim, the server stops delivering topics to the bridge: `/clock`, images and every other bridged topic go silent while the simulation itself keeps running. This happens even if the second client only lists objects or reads the clock, and it persists after that client disconnects. Any change to a running scene must therefore go through the bridge's own connection. The same applies when debugging: attaching a Python client to a running stack will silence its ROS topics.
+
 ### Depth images and point clouds
 
 Depth is published as **`32FC1` metres** by default, which is what `depth_image_proc`, RTAB-Map and ORB-SLAM3 expect. Samples with no reading become `NaN`; samples beyond range become `+inf`, so consumers skip them instead of mapping phantom geometry.

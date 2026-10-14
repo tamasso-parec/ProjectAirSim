@@ -5,7 +5,10 @@ MIT License.
 ROS bridge for Project AirSim: Main bridge module
 """
 
+import glob
+import hashlib
 import logging
+import os
 import re
 import time
 
@@ -916,6 +919,7 @@ class ProjectAirSimROSBridge:
                     sim_config_path=self.sim_config_path,
                 )
                 self._remove_scene_objects(world)
+                self._texture_scene_objects(world)
                 self._start_scene_clock(world)
                 if self.ros_is_started:
                     self.update_topics()
@@ -973,6 +977,54 @@ class ProjectAirSimROSBridge:
         if failed:
             self.logger.warning(
                 f"Could not remove {len(failed)} scene object(s): "
+                f"{'; '.join(failed[:5])}"
+                + (" ..." if len(failed) > 5 else "")
+            )
+
+    def _texture_scene_objects(self, world):
+        """
+        Give scene objects the photographs the profile's texture rules name.
+
+        Runs after the removal above and, like it, before the clock starts,
+        so the vehicle never sees the world change around it. Each matching
+        object gets one image from the rule's files, chosen by a hash of the
+        seed and the object name. As with removal, a failure is reported and
+        does not abort the scene.
+
+        Arguments:
+            world - The projectairsim.World for the scene just loaded
+        """
+        textures = self.interface_profile.scene.textures
+        if textures is None:
+            return
+
+        textured = 0
+        failed = []
+        for rule in textures.rules:
+            files = sorted(glob.glob(os.path.join(textures.directory, rule.files)))
+            if not files:
+                failed.append(f"no files match {rule.files} in {textures.directory}")
+                continue
+            try:
+                names = world.list_objects(rule.objects)
+            except Exception as exc:
+                failed.append(f"listing {rule.objects}: {exc}")
+                continue
+            for name in names:
+                digest = hashlib.sha256(f"{textures.seed}:{name}".encode("utf-8")).digest()
+                path = files[int.from_bytes(digest[:4], "big") % len(files)]
+                try:
+                    if world.set_object_texture_from_file(name, path):
+                        textured += 1
+                    else:
+                        failed.append(f"{name}: texture not applied")
+                except Exception as exc:
+                    failed.append(f"{name}: {exc}")
+
+        self.logger.info(f"Textured {textured} scene object(s)")
+        if failed:
+            self.logger.warning(
+                f"Could not texture {len(failed)} scene object(s): "
                 f"{'; '.join(failed[:5])}"
                 + (" ..." if len(failed) > 5 else "")
             )

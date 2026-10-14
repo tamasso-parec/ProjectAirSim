@@ -5,6 +5,7 @@ MIT License.
 ROS bridge for Project AirSim: interface profile (topic and frame aliases)
 """
 import fnmatch
+import os
 import re
 
 import yaml
@@ -177,6 +178,55 @@ class CollisionSettings:
         return self.message != self.MESSAGE_NONE
 
 
+class TextureRule:
+    """One ``scene.textures.rules`` entry: which objects get which images."""
+
+    def __init__(self, objects=None, files=None):
+        if not isinstance(objects, str) or not objects:
+            raise ProfileError("scene.textures.rules entries need an 'objects' regular expression")
+        try:
+            re.compile(objects)
+        except re.error as exc:
+            raise ProfileError(
+                f'scene.textures.rules objects "{objects}" is not a valid regular expression: {exc}'
+            ) from exc
+        if not isinstance(files, str) or not files:
+            raise ProfileError("scene.textures.rules entries need a 'files' glob")
+        self.objects = objects
+        self.files = files
+
+
+class TextureSettings:
+    """
+    Photographic textures applied to scene objects after the scene loads.
+
+    A scene rebuilt from primitives inside a template level gives the camera
+    grey shapes to look at, which says little about how a perception pipeline
+    would fare in a real environment. Each rule names objects with a regular
+    expression, matched against the full object name as ``remove_objects`` is,
+    and image files with a glob under ``directory``; every matching object
+    gets one of those images as its base colour. The choice is a hash of
+    ``seed`` and the object name, so a world looks the same on every run and
+    regardless of the order objects are listed in. ``directory`` may use
+    environment variables and ``~``.
+    """
+
+    def __init__(self, directory=None, rules=None, seed=0):
+        if not isinstance(directory, str) or not directory:
+            raise ProfileError("scene.textures.directory must be a path")
+        if not isinstance(rules, (list, tuple)) or not rules:
+            raise ProfileError("scene.textures.rules must be a non-empty list")
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            raise ProfileError("scene.textures.seed must be an integer")
+        self.directory = os.path.expanduser(os.path.expandvars(directory))
+        self.rules = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                raise ProfileError("scene.textures.rules entries must be mappings")
+            self.rules.append(TextureRule(**rule))
+        self.seed = seed
+
+
 class SceneSettings:
     """
     Changes made to the loaded scene so that it matches the world another
@@ -193,10 +243,13 @@ class SceneSettings:
     ``remove_objects`` is a list of regular expressions matched against scene
     object names.  Matching objects are destroyed after the scene loads,
     including actors placed in the level rather than spawned by the scene
-    config.
+    config.  ``textures`` (see TextureSettings) then dresses what remains.
     """
 
-    def __init__(self, remove_objects=None):
+    def __init__(self, remove_objects=None, textures=None):
+        if textures is not None and not isinstance(textures, dict):
+            raise ProfileError("scene.textures must be a mapping")
+        self.textures = TextureSettings(**textures) if textures else None
         if remove_objects is None:
             remove_objects = []
         if isinstance(remove_objects, str) or not isinstance(
@@ -228,7 +281,7 @@ class SceneSettings:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.remove_objects)
+        return bool(self.remove_objects) or self.textures is not None
 
 
 class QoSSettings:

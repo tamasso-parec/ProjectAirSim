@@ -153,3 +153,21 @@ def test_the_directory_expands_environment_variables(monkeypatch, texture_dir):
         "rules": [{"objects": "x", "files": "*.png"}],
     }}})
     assert profile.scene.textures.directory == str(texture_dir)
+
+@pytest.mark.parametrize('failure', ['missing_files', 'missing_objects', 'application'])
+def test_required_textures_prevent_clock_start_on_invalid_scene(texture_dir, tmp_path, failure):
+    config = textures(texture_dir)
+    settings = config['scene']['textures']
+    settings['required'] = True
+    settings['rules'] = [settings['rules'][0]]
+    objects = ['0_link_visual']
+    if failure == 'missing_files':
+        settings['directory'] = str(tmp_path / 'missing')
+    if failure == 'missing_objects':
+        objects = []
+    world = FakeWorld(objects, untexturable={'0_link_visual'} if failure == 'application' else ())
+    bridge = make_bridge(config)
+    with pytest.raises(RuntimeError, match='Required scene textures failed'):
+        bridge._texture_scene_objects(world)
+        world.resume()
+    assert world.paused and 'resume' not in world.events

@@ -211,7 +211,7 @@ class TextureSettings:
     environment variables and ``~``.
     """
 
-    def __init__(self, directory=None, rules=None, seed=0):
+    def __init__(self, directory=None, rules=None, seed=0, required=False):
         if not isinstance(directory, str) or not directory:
             raise ProfileError("scene.textures.directory must be a path")
         if not isinstance(rules, (list, tuple)) or not rules:
@@ -225,6 +225,9 @@ class TextureSettings:
                 raise ProfileError("scene.textures.rules entries must be mappings")
             self.rules.append(TextureRule(**rule))
         self.seed = seed
+        if not isinstance(required, bool):
+            raise ProfileError('scene.textures.required must be a boolean')
+        self.required = required
 
 
 class SceneSettings:

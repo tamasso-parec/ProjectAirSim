@@ -1010,6 +1010,8 @@ class ProjectAirSimROSBridge:
             except Exception as exc:
                 failed.append(f"listing {rule.objects}: {exc}")
                 continue
+            if not names and textures.required:
+                failed.append(f'no objects match {rule.objects}')
             for name in names:
                 digest = hashlib.sha256(f"{textures.seed}:{name}".encode("utf-8")).digest()
                 path = files[int.from_bytes(digest[:4], "big") % len(files)]
@@ -1023,6 +1025,8 @@ class ProjectAirSimROSBridge:
 
         self.logger.info(f"Textured {textured} scene object(s)")
         if failed:
+            if textures.required:
+                raise RuntimeError('Required scene textures failed: ' + '; '.join(failed))
             self.logger.warning(
                 f"Could not texture {len(failed)} scene object(s): "
                 f"{'; '.join(failed[:5])}"

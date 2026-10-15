@@ -241,3 +241,26 @@ def test_the_optical_rotation_maps_body_axes_onto_optical_axes(frames):
     assert apply(rotation, [0, 0, 1]) == pytest.approx([1, 0, 0], abs=1e-12)
     assert apply(rotation, [1, 0, 0]) == pytest.approx([0, -1, 0], abs=1e-12)
     assert apply(rotation, [0, 1, 0]) == pytest.approx([0, 0, -1], abs=1e-12)
+
+
+@pytest.mark.parametrize('sim_time,override,expected', [
+    ('true', None, '0'), ('false', None, '1'), ('true', 'true', '1'),
+    ('True', None, '0'), ('1', None, '0'), ('False', None, '1'),
+])
+def test_dds_timestamp_conversion_matches_the_ros_clock(px4_sitl, sim_time, override, expected):
+    from launch import LaunchContext
+    from launch.utilities import perform_substitutions
+
+    context = LaunchContext()
+    context.launch_configurations['use_sim_time'] = sim_time
+    if override is not None:
+        context.launch_configurations['uxrce_dds_time_sync'] = override
+    for action in px4_sitl.entities:
+        if isinstance(action, DeclareLaunchArgument):
+            action.execute(context)
+    process = entities_of(px4_sitl, ExecuteProcess)[0]
+    environment = {
+        perform_substitutions(context, key): perform_substitutions(context, value)
+        for key, value in process.process_description.additional_env
+    }
+    assert environment['PX4_PARAM_UXRCE_DDS_SYNCT'] == expected

@@ -174,6 +174,18 @@ def generate_launch_description():
                 "simulator link carries a single IMU."
             ),
         ),
+        DeclareLaunchArgument(
+            "uxrce_dds_time_sync",
+            default_value=PythonExpression([
+                "'false' if '", LaunchConfiguration("use_sim_time"),
+                "'.lower() in ('true', '1') else 'true'",
+            ]),
+            choices=["true", "false"],
+            description=(
+                "Convert ROS wall timestamps to PX4 time. Disable when ROS "
+                "already publishes PX4-compatible simulation timestamps."
+            ),
+        ),
         # ------------------------------------------------------------------
         # uXRCE-DDS agent and vehicle frames
         # ------------------------------------------------------------------
@@ -247,6 +259,10 @@ def generate_launch_description():
             "PX4_PARAM_EKF2_HGT_REF": LaunchConfiguration("ekf2_hgt_ref"),
             "PX4_PARAM_EKF2_GPS_CTRL": LaunchConfiguration("ekf2_gps_ctrl"),
             "PX4_PARAM_EKF2_MULTI_IMU": LaunchConfiguration("ekf2_multi_imu"),
+            "PX4_PARAM_UXRCE_DDS_SYNCT": PythonExpression([
+                "'1' if '", LaunchConfiguration("uxrce_dds_time_sync"),
+                "' == 'true' else '0'",
+            ]),
         },
     )
 
